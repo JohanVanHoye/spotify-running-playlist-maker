@@ -36,7 +36,8 @@ The functional flow is as follows:
 and this only if they did not already appear in one or more other playlists you might have.
 
 Because Spotify has a HUGE library, chances are real that you will find a lot of tracks even with the strictest of search settings.
-If you save thousands of tracks to a single playlist, this can get a unwieldy to work with. This is why there is an option to save in several parts. 
+If you save thousands of tracks to a single playlist, this can get unwieldy to work with quickly. 
+This is why there is an option to save in several parts. 
 
 ## Setup
 
