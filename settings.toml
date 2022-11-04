@@ -1,0 +1,47 @@
+#################################################
+# Spotify Run List Maker Configuration Settings #
+#################################################
+
+[scanner]
+# enter the name of a specific* genre (required), for example 'gaming edm'
+# *: something generic like 'metal' or 'pop' will not work (you'll see "Bad request., reason: None")
+# Instead, you can browse for genres at https://everynoise.com
+# Case does not matter for the search results but whatever case you use here will show up in your playlist name(s)
+genre_searchstring = 'gaming edm'
+# enter a narrowing search term on artist name (optional)
+artist_searchstring = ''
+
+
+[filtering]
+# tracks with a tempo lower than the specified value will be omitted.
+bpm_floor = 88
+# tracks with a tempo lower than the specified value will be omitted.
+bpm_ceiling = 92
+# with allow_doubled_bpm, you can control whether tracks with double the BPM are included or not.
+# e.g. with BPM between 88 and 92, will also include tracks with BPM between 176 and 184 BPM.
+allow_doubled_bpm = true
+# No tracks from the playlist names you include in this setting, shall be added to the new playlist.
+# This lets you discover more exclusively music you didn't already find before. (optional)
+playlists_to_exclude = []
+# Set the maximum number of tracks per playlist, generates new playlists as needed
+# Purpose of smaller playlists is manageability, e.g. for downloading onto a smartwatch
+# 0 means unlimited, i.e. save all to the same playlist.
+max_tracks_per_playlist = 0
+# Set the overall maximum number of tracks you want to save to your playlist(s)
+# 0 means unlimited, i.e. as many as your search unearthed.
+# Note: lowering this setting does not make the search itself any quicker.
+max_tracks_to_save = 0
+
+
+[spotify]
+# REQUIRED: to allow this python code to interact with your spotify account,
+# click "create an app" at https://developer.spotify.com/dashboard/applications
+# then copy-paste the generated Client ID and Client Secret here: 
+spotipy_client_id = ""
+spotipy_client_secret = ""
+# the redirect URI could be anything. You may use the below suggested value in your app:
+spotipy_redirect_uri = "http://localhost:8888/callback"
+
+[application]
+# set debug True to receive some more output on the console.
+debug = false
