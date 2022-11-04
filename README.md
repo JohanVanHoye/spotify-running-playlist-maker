@@ -91,7 +91,7 @@ sometimes artists just _appear on_ other artists' albums and this API end point 
 ## Reporting Issues
 
 If you have suggestions, bugs or other issues specific to this playlist generator,
-file them [here](https://github.com/.../issues).
+file them [here](https://github.com/JohanVanHoye/spotify-running-playlist-maker/issues).
 Or just send a pull request.
 
 Thanks for giving it a try and have fun with your new running playlists :-). 
