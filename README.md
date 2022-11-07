@@ -52,6 +52,12 @@ This is why there is an option to save in several parts.
 This app will let the python code technically connect to your spotify account by providing you with two codes: the _CLIENT ID_ and _CLIENT SECRET_.
 3. Save these values to your [settings.toml](settings.toml) file.
 4. Configure the rest of the [settings.toml](settings.toml) settings so that it trawls through the right Spotify waters with the kind of fishing net you want.
+5. Install dependencies: 
+```shell
+pip install spotipy
+pip install tomli
+```
+
 
 
 ## How to execute
@@ -59,8 +65,8 @@ This app will let the python code technically connect to your spotify account by
 Before you can run, you **must** configure all your settings in the [settings.toml](settings.toml) file.
 Each setting's purpose is documented inside the file itself. 
 
-The program itself takes no runtime arguments, so once you saved your settings, you just run this command:
-```python
+The program itself takes no runtime arguments, so once you saved your settings, you just run this command from the directory where main.py is located:
+```shell
 python main.py
 ```
 The first time, a browser window will open in which Spotify will request you to authorize the code; please grant this privilege. 
