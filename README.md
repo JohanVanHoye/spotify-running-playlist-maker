@@ -10,12 +10,18 @@ On my runs, I get tired of listening to the same few tracks over and over again.
 Spotify has more music than you can imagine, so I want some variation, in fact, A LOT of variation. 
 At the same time, the music should still be tuned to my running pace.
 
+![A running workout on a playlist with just the right BPM.](./cadence.jpg "A running workout on a playlist with just the right BPM.")
+
+_This is what I use it for: this graph (from [Garmin Connect](https://connect.garmin.com)) plots cadence over a running workout run with a playlist of just the right BPM._
+
+But how do you find the right BPM?
 - Spotify's suggestions nor the user interface let you really poke around for music with the right tempo, in the genre you like. 
 (Around 2015-2018 the _Spotify Running_ feature kinda did the job; and then [they pulled the plug on it](https://community.spotify.com/t5/Content-Questions/Retirement-of-our-Running-Feature/td-p/4383603).)
-- Sure, you can always get _someone else_'s public running playlist, but [are their tastes as bad as your own](https://pudding.cool/2021/10/judge-my-music/)? For me, that's just not an option. 
+- Sure, you can always get _someone else_'s public running playlist, but [are their tastes as bad as your own](https://pudding.cool/2021/10/judge-my-music/)? Is the BPM range just right? For me, that's just not an option. 
 - To interactively explore genres, [EveryNoise](https://everynoise.com) has done a tremendous job, but you cannot create playlists with it, let alone filter the BPM. 
-- Also, for filtering music on tempo, you can use awesome tools like what [Playlist Machinery](http://sortyourmusic.playlistmachinery.com) have on offer. 
+- For filtering music on tempo, you _can_ use awesome tools like what [Playlist Machinery](http://sortyourmusic.playlistmachinery.com) have on offer. 
   But its main drawback is, it only works on your existing playlists, in other words _on the music you have already found_.  
+
 
 _Maybe_ you are not like me at all. Could be you just want to scour Spotify for that next great song that would
 blend nicely into that DJ-set you already have. A selection on genre and tempo is what you want. 
