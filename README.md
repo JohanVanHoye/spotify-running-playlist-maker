@@ -54,7 +54,7 @@ This app will let the python code technically connect to your spotify account by
 4. Configure the rest of the [settings.toml](settings.toml) settings so that it trawls through the right Spotify waters with the kind of fishing net you want.
 
 
-## How to run
+## How to execute
 
 Before you can run, you **must** configure all your settings in the [settings.toml](settings.toml) file.
 Each setting's purpose is documented inside the file itself. 
@@ -85,15 +85,21 @@ The retrieved data is temporarily stored in an in-memory database (sqlite3) whic
 I am not a professional programmer and still quite new to python so be gentle with me. 
 
 ## Known limitations
-### I still get duplicates though I have tried to filter them out.
+### - I still get duplicates though I have tried to filter them out.
 The very same tracks may exist on Spotify with a different track URI, making them unique. 
 We try to work around this by also comparing the track name and eliminating on this basis; 
 but then still there may be small differences for example in case or punctuation causing the names to be interpreted as different.
 
-### No tracks are found for some artists
+### - No tracks are found for some artists
 We pass through the ["get artist's albums"](https://developer.spotify.com/documentation/web-api/reference/#/operations/get-an-artists-albums) 
 end point of the spotify API to know what music an artist has released;
 sometimes artists just _appear on_ other artists' albums and this API end point does not return that information.
+
+### - I expected this artist; and they do not show up at all
+The actual genre the artist is tagged with might be different from the one you are searching. 
+A quick and simple litmus test for this is trying to use the "find artist" search box on [EveryNoise](https://everynoise.com). 
+Either it will list the genres the artist appears in; or it will politely reply "_Sorry, that one doesn't seem to be on any of these maps yet._" 
+This is because some artists are simply not tagged with any genre at all. This makes them essentially undiscoverable with this tool.
 
 ## Reporting Issues
 
