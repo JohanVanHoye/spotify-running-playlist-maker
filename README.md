@@ -10,7 +10,7 @@ On my runs, I get tired of listening to the same few tracks over and over again.
 Spotify has more music than you can imagine, so I want some variation, in fact, A LOT of variation. 
 At the same time, the music should still be tuned to my running pace.
 
-![A running workout on a playlist with just the right BPM.](./cadence.jpg "A running workout on a playlist with just the right BPM.")
+![A running workout on a playlist with just the right BPM.](cadence.jpg "A running workout on a playlist with just the right BPM.")
 
 _This is what I use it for: this graph (from [Garmin Connect](https://connect.garmin.com)) plots cadence over a running workout run with a playlist of just the right BPM._
 
@@ -33,7 +33,7 @@ This python program, **the Spotify Running Playlist maker** will let you access 
 and save the songs that match your (tempo) filter to your spotify user profile (free or premium) in one or several new playlists.
 
 The functional flow is as follows: 
-1. You configure all your settings in the [settings.toml](.\settings.toml) file and run the program.  
+1. You configure all your settings in the [settings.toml](settings.toml) file and run the program.  
 2. It searches Spotify for all artists corresponding to the given genre
 3. It then loops over these artists, and retrieves all albums of each artist
 4. It gets the tracks of each album and fetches their tempo
@@ -50,13 +50,13 @@ This is why there is an option to save in several parts.
 1. Download this repository. 
 2. Create yourself an "app" on https://developers.spotify.com/.
 This app will let the python code technically connect to your spotify account by providing you with two codes: the _CLIENT ID_ and _CLIENT SECRET_.
-3. Save these values to your [settings.toml](.\settings.toml) file.
-4. Configure the rest of the [settings.toml](.\settings.toml) settings so that it trawls through the right Spotify waters with the kind of fishing net you want.
+3. Save these values to your [settings.toml](settings.toml) file.
+4. Configure the rest of the [settings.toml](settings.toml) settings so that it trawls through the right Spotify waters with the kind of fishing net you want.
 
 
 ## How to run
 
-Before you can run, you **must** configure all your settings in the [settings.toml](.\settings.toml) file.
+Before you can run, you **must** configure all your settings in the [settings.toml](settings.toml) file.
 Each setting's purpose is documented inside the file itself. 
 
 The program itself takes no runtime arguments, so once you saved your settings, you just run this command:
