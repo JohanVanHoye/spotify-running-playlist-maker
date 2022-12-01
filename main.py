@@ -33,7 +33,7 @@ def main():
     api_result = None
     match_found = False
 
-    while my_offset == 0 or api_result['artists']['next']:
+    while my_offset == 0 or (api_result['artists']['next'] and my_offset < 1000):
         api_result = settings.spotify.search(f'genre:"{settings.genre_searchstring}" {settings.artist_searchstring}',
                                              type='artist', limit=my_limit, offset=my_offset)
         for searchResult in api_result['artists']['items']:
