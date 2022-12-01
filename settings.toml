@@ -3,11 +3,13 @@
 #################################################
 
 [scanner]
-# enter the name of a specific* genre (required), for example 'gaming edm'
-#     You can browse for genres at https://everynoise.com
-#     Case does not matter for the search results but whatever case you use here will show up in your playlist name(s)
-#     Broad genres like 'metal' or 'pop' will at most yield 1000 artists
-#     (This is the maximum supported by Spotify's search API)
+# enter the name of a genre (required), for example 'gaming edm'
+#     - You can browse for genres at https://everynoise.com
+#     - Case does not matter for the search results but whatever case you use here will show up in your playlist name(s)
+#     - Broad genres like 'metal' or 'pop' will at most yield 1000 artists
+#       (This is the maximum supported by Spotify's search API)
+#     - providing a single space will work too and will let you search across genres
+#       (for instance for particular artists that do not have genre metadata)
 genre_searchstring = 'new wave'
 # enter a narrowing search term on artist name (optional)
 artist_searchstring = ''
