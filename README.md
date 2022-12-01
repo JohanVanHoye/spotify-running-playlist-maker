@@ -105,7 +105,8 @@ sometimes artists just _appear on_ other artists' albums and this API end point 
 The actual genre the artist is tagged with might be different from the one you are searching. 
 A quick and simple litmus test for this is trying to use the "find artist" search box on [EveryNoise](https://everynoise.com). 
 Either it will list the genres the artist appears in; or it will politely reply "_Sorry, that one doesn't seem to be on any of these maps yet._" 
-This is because some artists are simply not tagged with any genre at all. This makes them essentially undiscoverable with this tool.
+This is because some artists are simply not tagged with any genre at all. 
+You _can_ still get to the artist's tracks though by supplying a single space in the ```genre_searchstring = ' '``` and then this artist's name in the ```artist_searchstring = 'my_artist'``` in your settings.toml file.
 
 ## Reporting Issues
 
