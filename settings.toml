@@ -13,6 +13,9 @@
 genre_searchstring = 'new wave'
 # enter a narrowing search term on artist name (optional)
 artist_searchstring = ''
+# set interactive mode to true to be asked for every artist found if you want to scan them
+# set to false to scan them all.
+interactive_mode = false
 
 
 [filtering]

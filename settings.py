@@ -15,6 +15,7 @@ class Settings:
 
         self.genre_searchstring = _config["scanner"]["genre_searchstring"]
         self.artist_searchstring = _config["scanner"]["artist_searchstring"]
+        self.interactive_mode = _config["scanner"]["interactive_mode"]
         self.bpm_floor: int = _config["filtering"]["bpm_floor"]
         self.bpm_ceiling = _config["filtering"]["bpm_ceiling"]
         self.allow_doubled_bpm = _config["filtering"]["allow_doubled_bpm"]
@@ -55,6 +56,9 @@ class Settings:
         assert (isinstance(self.artist_searchstring, str)), \
             f'The "artist_searchstring" in settings.toml must be a string value ' \
             f'(is now {type(self.artist_searchstring).__name__}).'
+        assert (isinstance(self.interactive_mode, bool)), \
+            f'The "interactive_mode" in settings.toml must be set to either true or false, lowercase ' \
+            f'(is now {type(self.interactive_mode).__name__}).'
         assert (isinstance(self.bpm_floor, int)), \
             f'The "bpm_floor" in settings.toml must be an integer value (is now {type(self.bpm_floor).__name__}).'
         assert (self.bpm_floor >= 0), \
@@ -65,7 +69,7 @@ class Settings:
             f'The "bpm_ceiling" in settings.toml must be a non-negative integer value (is now {self.bpm_ceiling}).'
         assert (self.bpm_ceiling >= self.bpm_floor), \
             f'The "bpm_ceiling" value ({self.bpm_ceiling}) in settings.toml ' \
-            f'cannot be smaller than the "bpm_floor" value ({self.bpm_floor}).'
+            f'cannot be slower than the "bpm_floor" value ({self.bpm_floor}).'
         assert (isinstance(self.allow_doubled_bpm, bool)), \
             f'The "allow_doubled_bpm" in settings.toml must be set to either true or false, lowercase ' \
             f'(is now {type(self.allow_doubled_bpm).__name__}).'

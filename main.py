@@ -42,63 +42,76 @@ def main():
 
     print('Search for artists in genre', settings.genre_searchstring, 'yielded', len(artists_to_process), 'results.')
 
+    process = "?"
     for artist in artists_to_process:
         print('')
         print('♫', artist.name.upper())
         print('=' * 80)
-        results = settings.spotify.artist_albums(artist.uri, album_type='album')
-        albums = results['items']
-        while results['next']:
-            results = settings.spotify.next(results)
-            albums.extend(results['items'])
+        if settings.interactive_mode:
+            if process not in ("A", "a"):
+                process = "?"
+            while process not in ("", "Y", "N", "C", "A", "y", "n", "c", "a"):
+                process = input("Process this artist? (Enter = Yes; N = No, skip; C = Cancel, "
+                                "stop processing any more artists, A = Yes to all): ") or "Y"
+        else:
+            # all artists are processed in non-interactive mode
+            process = "A"
+        if process in ("C", "c"):
+            break
+        if process in ("A", "a", "Y", "y"):
+            results = settings.spotify.artist_albums(artist.uri, album_type='album')
+            albums = results['items']
+            while results['next']:
+                results = settings.spotify.next(results)
+                albums.extend(results['items'])
 
-        for album in albums:
-            print('◌', album['name'])
-            while True:
-                try:
-                    album = settings.spotify.album(album['uri'])
-                except Exception as ex:
-                    template = "Exception of type {0} occurred. Ignoring, pausing, then retrying:\n{1!r}"
-                    message = template.format(type(ex).__name__, ex.args)
-                    print(message)
-                    tm.sleep(5)
-                    continue
-                break
+            for album in albums:
+                print('◌', album['name'])
+                while True:
+                    try:
+                        album = settings.spotify.album(album['uri'])
+                    except Exception as ex:
+                        template = "Exception of type {0} occurred. Ignoring, pausing, then retrying:\n{1!r}"
+                        message = template.format(type(ex).__name__, ex.args)
+                        print(message)
+                        tm.sleep(5)
+                        continue
+                    break
 
-            # list tracks, we'll assume no album will exceed 100 tracks for now
-            my_tracks = [track['uri'] for track in album['tracks']['items']]
-            api_result = None
-            while True:
-                try:
-                    # we'll do one API call per album, hitting the API a bit less than track per track
-                    api_result = settings.spotify.audio_features(my_tracks)
-                except Exception as ex:
-                    template = "Exception of type {0} occurred. Ignoring, pausing, then retrying:\n{1!r}"
-                    message = template.format(type(ex).__name__, ex.args)
-                    print(message)
-                    tm.sleep(5)
-                    continue
-                break
+                # list tracks, we'll assume no album will exceed 100 tracks for now
+                my_tracks = [track['uri'] for track in album['tracks']['items']]
+                api_result = None
+                while True:
+                    try:
+                        # we'll do one API call per album, hitting the API a bit less than track per track
+                        api_result = settings.spotify.audio_features(my_tracks)
+                    except Exception as ex:
+                        template = "Exception of type {0} occurred. Ignoring, pausing, then retrying:\n{1!r}"
+                        message = template.format(type(ex).__name__, ex.args)
+                        print(message)
+                        tm.sleep(5)
+                        continue
+                    break
 
-            track_number = 0
-            for track_feature in api_result:
-                tempo = 0
-                my_track_name = album['tracks']['items'][track_number]['name']
-                # Even when fetched from API, details are not guaranteed to be available
-                if track_feature is not None:
-                    tempo = round(track_feature['tempo'])
+                track_number = 0
+                for track_feature in api_result:
+                    tempo = 0
+                    my_track_name = album['tracks']['items'][track_number]['name']
+                    # Even when fetched from API, details are not guaranteed to be available
+                    if track_feature is not None:
+                        tempo = round(track_feature['tempo'])
 
-                if settings.bpm_floor <= tempo <= settings.bpm_ceiling or \
-                        settings.allow_doubled_bpm and settings.bpm_floor * 2 <= tempo <= settings.bpm_ceiling * 2:
-                    print('  √ MATCH --> ♯', my_track_name, 'is', tempo, 'BPM')
-                    # adding track to table if unique URI AND track name was not already added with another URI
-                    cur.execute("INSERT OR IGNORE INTO t_tracks (track_uri, track_name, track_bpm)"
-                                "SELECT ?, ?, ?"
-                                "WHERE NOT EXISTS (SELECT * FROM t_tracks WHERE track_name = ?);",
-                                (track_feature['uri'], my_track_name, tempo
-                                 if settings.bpm_floor <= tempo <= settings.bpm_ceiling else tempo / 2, my_track_name))
-                    match_found = True
-                track_number += 1
+                    if settings.bpm_floor <= tempo <= settings.bpm_ceiling or \
+                            settings.allow_doubled_bpm and settings.bpm_floor * 2 <= tempo <= settings.bpm_ceiling * 2:
+                        print('  √ MATCH --> ♯', my_track_name, 'is', tempo, 'BPM')
+                        # adding track to table if unique URI AND track name was not already added with another URI
+                        cur.execute("INSERT OR IGNORE INTO t_tracks (track_uri, track_name, track_bpm)"
+                                    "SELECT ?, ?, ?"
+                                    "WHERE NOT EXISTS (SELECT * FROM t_tracks WHERE track_name = ?);",
+                                    (track_feature['uri'], my_track_name, tempo
+                                     if settings.bpm_floor <= tempo <= settings.bpm_ceiling else tempo / 2, my_track_name))
+                        match_found = True
+                    track_number += 1
     db_result = cur.execute("SELECT COUNT(*) AS count_of_tracks "
                             "FROM   t_tracks t "
                             "WHERE NOT EXISTS (SELECT 1 FROM t_tracks_in_playlists tp "
