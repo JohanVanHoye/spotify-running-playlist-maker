@@ -81,17 +81,22 @@ def main():
                 # list tracks, we'll assume no album will exceed 100 tracks for now
                 my_tracks = [track['uri'] for track in album['tracks']['items']]
                 api_result = None
-                while True:
-                    try:
-                        # we'll do one API call per album, hitting the API a bit less than track per track
-                        api_result = settings.spotify.audio_features(my_tracks)
-                    except Exception as ex:
-                        template = "Exception of type {0} occurred. Ignoring, pausing, then retrying:\n{1!r}"
-                        message = template.format(type(ex).__name__, ex.args)
-                        print(message)
-                        tm.sleep(5)
-                        continue
-                    break
+                # while True:
+                #     try:
+                #         # we'll do one API call per album, hitting the API a bit less than track per track
+                #         api_result = settings.spotify.audio_features(my_tracks)
+                #     except Exception as ex:
+                #         template = "Exception of type {0} occurred. Ignoring, pausing, then retrying:\n{1!r}"
+                #         message = template.format(type(ex).__name__, ex.args)
+                #         print(message)
+                #         tm.sleep(5)
+                #         continue
+                #     break
+                try:
+                    api_result = get_audio_features_with_retry(my_tracks)
+                    # Process the audio features here
+                except Exception as e:
+                    print(f"Failed to retrieve audio features: {e}")
 
                 track_number = 0
                 for track_feature in api_result:
@@ -226,6 +231,35 @@ def main():
 
     settings.sql_cursor.close()
     print('┕■ Spotify Run List maker completed at ', datetime.now())
+
+
+def get_audio_features_with_retry(track_uris, max_retries=5, initial_delay=1.0):
+    retries = 0
+    delay = initial_delay
+
+    while retries < max_retries:
+        try:
+            # Attempt to fetch audio features
+            # we'll do one API call per album, hitting the API a bit less than track per track
+            api_result = settings.spotify.audio_features(track_uris)
+            return api_result  # Return the result if successful
+        except settings.spotify.exceptions.SpotifyException as ex:
+            if ex.http_status == 429:
+                # If rate limit exceeded, extract Retry-After header value (in seconds)
+                retry_after = int(ex.headers.get("Retry-After", delay)) + 5
+                print(f"Rate limit exceeded. Retrying after {retry_after} seconds.")
+                tm.sleep(retry_after)
+            else:
+                print(f"SpotifyException occurred while fetching audio features: {ex}")
+                tm.sleep(delay)
+        except Exception as ex:
+            print(f"Unexpected exception occurred while fetching audio features: {ex}")
+            tm.sleep(delay)
+
+        retries += 1
+        delay *= 2  # Exponential backoff
+
+    raise Exception(f"Failed to get audio features after {max_retries} retries.")
 
 
 # Standard boilerplate to call the main() function to begin
