@@ -57,7 +57,10 @@ This app will let the python code technically connect to your spotify account by
 pip install spotipy
 pip install tomli
 ```
-
+or
+```shell
+pip install -r requirements.txt
+```
 
 
 ## How to execute
