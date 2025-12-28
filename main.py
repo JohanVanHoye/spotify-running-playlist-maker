@@ -10,6 +10,299 @@ from playlists import load_playlists, count_tracks_in_playlist, get_next_target_
 settings = Settings()
 
 
+def discover_artists_for_genre(
+    _settings,
+    primary_market='BE',
+    max_track_pages=20,          # 20 * 50 = ~1000 tracks scanned
+    playlist_pages=0,            # scan first N playlist search pages
+    expand_related=False,        # optionally expand via related artists
+):
+    """
+    Genre-agnostic artist discovery.
+    Strategy:
+      A) Try artist search for the genre in the primary market; if empty, try a few fallback markets.
+      B) If still sparse, search tracks with the same query in the primary market and derive artists from track credits.
+      C) Harvest playlists whose title/description contains the genre term and derive artists from their tracks.
+      D) Optionally expand the discovered set via one-hop 'related artists'.
+    Returns: set[Artist]
+    """
+    spotify_client = _settings.spotify
+
+    # Build query safely from user-provided filters
+    genre_query = (_settings.genre_searchstring or '').strip()
+    artist_hint = (_settings.artist_searchstring or '').strip()
+    query_parts = []
+    if genre_query:
+        query_parts.append(f'genre:"{genre_query}"')
+    if artist_hint:
+        query_parts.append(f'artist:"{artist_hint}"')
+    query = ' '.join(query_parts)
+
+    if not query:
+        print("⚠ No genre/artist filters; discovery skipped.")
+        return set()
+
+    # Dedup store keyed by artist ID
+    discovered_artists_by_id = {}  # artist_id -> (artist_name, artist_uri)
+
+    # ---- A) Artist search in primary, then fallback markets ----
+    candidate_markets = [primary_market, 'US', 'GB', 'DE', 'FR', 'NL']
+    for market_code in candidate_markets:
+        try:
+            search_response = spotify_client.search(q=query, market=market_code, type='artist', limit=50, offset=0)
+            artist_items = search_response.get('artists', {}).get('items', []) or []
+            for artist in artist_items:
+                artist_id = artist['uri'].split(':')[-1]
+                discovered_artists_by_id[artist_id] = (artist['name'], artist['uri'])
+            if artist_items:
+                print(f"✓ Found {len(artist_items)} artist(s) for {query!r} in market {market_code}")
+                break  # Stop once we have any artist hits
+            else:
+                print(f"… No artists for {query!r} in market {market_code}, trying next market")
+        except Exception as ex:
+            print(f"⚠ Artist search failed in {market_code}: {ex}")
+
+    # ---- B) Track search fallback (genre -> derive artists) ----
+    if not discovered_artists_by_id:
+        try:
+            for page_index in range(max_track_pages):  # paginate tracks, derive many artists
+                offset = page_index * 50
+                track_search_response = spotify_client.search(q=query, market=primary_market,
+                                                              type='track', limit=50, offset=offset)
+                track_items = track_search_response.get('tracks', {}).get('items', []) or []
+                if not track_items:
+                    break
+                for track in track_items:
+                    for track_artist in (track.get('artists') or []):
+                        # Prefer 'id'; fallback to 'uri' only if present and well-formed.
+                        artist_id = track_artist.get('id')
+                        artist_uri = track_artist.get('uri')
+                        if artist_id:
+                            artist_uri = artist_uri or f"spotify:artist:{artist_id}"
+                        elif artist_uri:
+                            uri_parts = artist_uri.split(':')
+                            if len(uri_parts) == 3 and uri_parts[1] == 'artist':
+                                artist_id = uri_parts[2]
+                            else:
+                                continue  # malformed or non-artist URI; skip
+                        else:
+                            continue  # neither id nor uri; skip
+                        discovered_artists_by_id[artist_id] = (track_artist.get('name') or '(unknown)', artist_uri)
+            if discovered_artists_by_id:
+                print(
+                    f"✓ Derived {len(discovered_artists_by_id)} artists from tracks for {query!r} in {primary_market}")
+            else:
+                print(f"… No artists derived from tracks for {query!r} in {primary_market}")
+        except Exception as ex:
+            print(f"⚠ Track search failed in {primary_market}: {ex}")
+
+    # ---- C) Playlist harvest (broad coverage), optional ----
+    try:
+        playlist_search_term = genre_query  # free text search; not a field filter here
+        for page_index in range(playlist_pages):
+            offset = page_index * 50
+            playlist_search_response = spotify_client.search(q=playlist_search_term, type='playlist',
+                                                             market=primary_market, limit=50, offset=offset)
+            playlist_items = playlist_search_response.get('playlists', {}).get('items', []) or []
+            if not playlist_items:
+                break
+            for playlist in playlist_items:
+                if not playlist:
+                    continue
+                playlist_id = playlist.get('id')
+                if not playlist_id:
+                    continue
+                playlist_offset = 0
+                # Pull up to ~200 items per playlist (tune as needed)
+                while playlist_offset <= 200:
+                    playlist_page = spotify_client.playlist_items(playlist_id, market=primary_market,
+                                                                  limit=100, offset=playlist_offset)
+                    track_rows = playlist_page.get('items', []) or []
+                    if not track_rows:
+                        break
+                    for row in track_rows:
+                        track_obj = row.get('track')
+                        if not track_obj or track_obj.get('type') != 'track':
+                            continue
+                        for track_artist in track_obj.get('artists', []) or []:
+                            artist_uri = track_artist.get('uri')
+                            if not artist_uri:
+                                continue
+                            artist_id = artist_uri.split(':')[-1]
+                            discovered_artists_by_id[artist_id] = (track_artist['name'], artist_uri)
+                    if not playlist_page.get('next'):
+                        break
+                    playlist_offset += 100
+                if len(discovered_artists_by_id) % 100 == 0:
+                    print(f" ... Playlist harvesting ongoing; total artists now {len(discovered_artists_by_id)}")
+        if discovered_artists_by_id:
+            print(f"✓ Playlist harvest added; total artists now {len(discovered_artists_by_id)}")
+    except Exception as ex:
+        print(f"⚠ Playlist harvest failed: {ex}")
+
+    # ---- D) Related artists expansion (1 hop) ----
+    if expand_related and discovered_artists_by_id:
+        seed_artist_ids = list(discovered_artists_by_id.keys())
+        # Cap expansion to avoid rate limits; 500 seeds is usually plenty
+        for seed_id in seed_artist_ids[:500]:
+            try:
+                related_response = spotify_client.artist_related_artists(seed_id)
+                for related in related_response.get('artists', []) or []:
+                    related_id = related['uri'].split(':')[-1]
+                    discovered_artists_by_id[related_id] = (related['name'], related['uri'])
+            except Exception as ex:
+                print(f"⚠ Related artists fetch failed for {seed_id}: {ex}")
+        print(f"✓ Related expansion done; total artists now {len(discovered_artists_by_id)}")
+
+    return {Artist(name=val[0], uri=val[1]) for val in discovered_artists_by_id.values()}
+
+
+# def discover_artists_for_genre(
+#     stngs,
+#     primary_market='BE',
+#     max_track_pages=20,     # 20 * 50 = ~1000 tracks scanned
+#     playlist_pages=8,       # scan first N playlist search pages
+#     expand_related=True,    # optionally expand via related artists
+# ):
+#     """
+#     Genre-agnostic artist discovery.
+#
+#     Strategy:
+#       A) Try artist search for the genre in BE; if empty, try a few fallback markets.
+#       B) If still sparse, search tracks by the same genre in BE, extract artists.
+#       C) Optionally expand discovered set via 'related artists' (1 hop).
+#
+#     Returns: set[Artist]
+#     """
+#     sp = stngs.spotify
+#     genre = stngs.genre_searchstring
+#
+#     # Inputs & safe query parts
+#     genre = (genre or stngs.genre_searchstring or "").strip()
+#     artist_hint = (stngs.artist_searchstring or "").strip()
+#
+#     parts = []
+#     if genre:
+#         parts.append(f'genre:"{genre}"')
+#     if artist_hint:
+#         parts.append(f'artist:"{artist_hint}"')
+#     q = " ".join(parts)
+#     if not q:
+#         # If the user didn't provide any filters, bail early.
+#         print("⚠ No genre/artist filters; discovery skipped.")
+#         return set()
+#
+#     # Dedup store keyed by artist ID
+#     found = {}  # artist_id -> (name, uri)
+#
+#     # ---------- A) Artist search in BE, then fallback markets ----------
+#     markets = [primary_market, 'US', 'GB', 'DE', 'FR', 'NL']
+#     for mk in markets:
+#         try:
+#             res = sp.search(q=q, market=mk, type='artist', limit=50, offset=0)
+#             items = res.get('artists', {}).get('items', []) or []
+#             for a in items:
+#                 aid = a['uri'].split(':')[-1]
+#                 found[aid] = (a['name'], a['uri'])
+#             if items:
+#                 print(f"✓ Found {len(items)} artist(s) for {q!r} in market {mk}")
+#                 break  # Stop once we have any artist hits
+#             else:
+#                 print(f"… No artists for {q!r} in market {mk}, trying next market")
+#         except Exception as ex:
+#             print(f"⚠ Artist search failed in {mk}: {ex}")
+#
+#     # ---------- B) Track search fallback (genre -> derive artists) ----------
+#     if not found:
+#         try:
+#             for page in range(max_track_pages):  # paginate tracks, derive many artists
+#                 offset = page * 50
+#                 tres = sp.search(q=q, market=primary_market, type='track', limit=50, offset=offset)
+#                 titems = tres.get('tracks', {}).get('items', []) or []
+#                 if not titems:
+#                     break
+#                 for t in titems:
+#                     for ar in (t.get('artists') or []):
+#                       #  Prefer 'id'; fallback to 'uri' only if present and well-formed.
+#                         aid = ar.get('id')
+#                         auri = ar.get('uri')
+#                         if aid:
+#                             auri = auri or f"spotify:artist:{aid}"
+#                         elif auri:
+#                             parts = auri.split(':')
+#                             if len(parts) == 3 and parts[1] == 'artist':
+#                                 aid = parts[2]
+#                             else:
+#                                 continue  # malformed or non-artist URI; skip
+#                         else:
+#                             continue  # neither id nor uri; skip
+#                         found[aid] = (ar.get('name') or '(unknown)', auri)
+#             if found:
+#                 print(f"✓ Derived {len(found)} artist(s) from tracks for {q!r} in {primary_market}")
+#             else:
+#                 print(f"… No artists derived from tracks for {q!r} in {primary_market}")
+#         except Exception as ex:
+#             print(f"⚠ Track search failed in {primary_market}: {ex}")
+#
+#     # ---------- C) Playlist harvest (broad coverage), optional ----------
+#     # Search playlists by the genre term itself; pull tracks -> extract artists.
+#     # Useful when artist genres are sparse but curators use the term in titles/descriptions.
+#     try:
+#         term = genre  # search text; not a field filter here
+#         for page in range(playlist_pages):
+#             offset = page * 50
+#             pres = sp.search(q=term, type='playlist', market=primary_market, limit=50, offset=offset)
+#             pls = pres.get('playlists', {}).get('items', []) or []
+#             if not pls:
+#                 break
+#             for pl in pls:
+#                 if pl:
+#                     pl_id = pl.get('id')
+#                 if not pl_id:
+#                     continue
+#                 pl_offset = 0
+#                 # Pull up to ~200 items per playlist (tune as needed)
+#                 while pl_offset <= 200:
+#                     ppage = sp.playlist_items(pl_id, market=primary_market, limit=100, offset=pl_offset)
+#                     trs = ppage.get('items', []) or []
+#                     if not trs:
+#                         break
+#                     for it in trs:
+#                         tr = it.get('track')
+#                         if not tr or tr.get('type') != 'track':
+#                             continue
+#                         for ar in tr.get('artists', []) or []:
+#                             if not ar.get('uri'):
+#                                 continue
+#                             aid = ar['uri'].split(':')[-1]
+#                             found[aid] = (ar['name'], ar['uri'])
+#                     if not ppage.get('next'):
+#                         break
+#                     pl_offset += 100
+#                     if len(found) % 100 == 0:
+#                         print(f"    ... Playlist harvesting ongoing; total artists now {len(found)}")
+#         if found:
+#             print(f"✓ Playlist harvest added; total artists now {len(found)}")
+#     except Exception as ex:
+#         print(f"⚠ Playlist harvest failed: {ex}")
+#
+#     # ---------- D) Related artists expansion (1 hop) ----------
+#     if expand_related and found:
+#         seeds = list(found.keys())
+#         # Cap expansion to avoid rate limits; 500 seeds is usually plenty
+#         for seed_id in seeds[:500]:
+#             try:
+#                 rel = sp.artist_related_artists(seed_id)
+#                 for a in rel.get('artists', []) or []:
+#                     aid = a['uri'].split(':')[-1]
+#                     found[aid] = (a['name'], a['uri'])
+#             except Exception as ex:
+#                 print(f"⚠ Related artists fetch failed for {seed_id}: {ex}")
+#         print(f"✓ Related expansion done; total artists now {len(found)}")
+#
+#     return {Artist(name=v[0], uri=v[1]) for v in found.values()}
+
+
 def main():
     """
     Creates playlists based on search criteria.
@@ -27,19 +320,24 @@ def main():
     print(f"Welcome", settings.spotify.me()["display_name"], "☺")
 
     # Find all artists using Search for Genre
-    artists_to_process = set()
-    my_limit = 50
-    my_offset = 0
-    api_result = None
+    # artists_to_process = set()
+    # my_limit = 50
+    # my_offset = 0
+    # api_result = None
     match_found = False
+    # q = ''
+    # if settings.genre_searchstring and settings.genre_searchstring.strip():
+    #     q = f'genre:"{settings.genre_searchstring}" '
+    # if settings.artist_searchstring and settings.artist_searchstring.strip():
+    #     q += f'artist:"{settings.artist_searchstring}"'
+    #
+    # while my_offset == 0 or (api_result['artists']['next'] and my_offset < 1000):
+    #     api_result = settings.spotify.search(q=q, market='BE', type='artist', limit=my_limit, offset=my_offset)
+    #     for searchResult in api_result['artists']['items']:
+    #         artists_to_process.add(Artist(searchResult["name"], searchResult["uri"]))
+    #     my_offset += my_limit
 
-    while my_offset == 0 or (api_result['artists']['next'] and my_offset < 1000):
-        api_result = settings.spotify.search(f'genre:"{settings.genre_searchstring}" {settings.artist_searchstring}',
-                                             type='artist', limit=my_limit, offset=my_offset)
-        for searchResult in api_result['artists']['items']:
-            artists_to_process.add(Artist(searchResult["name"], searchResult["uri"]))
-        my_offset += my_limit
-
+    artists_to_process = discover_artists_for_genre(settings, primary_market='BE')
     print('Search for artists in genre', settings.genre_searchstring, 'yielded', len(artists_to_process), 'results.')
 
     process = "?"
@@ -59,7 +357,7 @@ def main():
         if process in ("C", "c"):
             break
         if process in ("A", "a", "Y", "y"):
-            results = settings.spotify.artist_albums(artist.uri, album_type='album')
+            results = settings.spotify.artist_albums(artist_id=artist.uri, include_groups='album,single')
             albums = results['items']
             while results['next']:
                 results = settings.spotify.next(results)
@@ -114,7 +412,8 @@ def main():
                                     "SELECT ?, ?, ?"
                                     "WHERE NOT EXISTS (SELECT * FROM t_tracks WHERE track_name = ?);",
                                     (track_feature['uri'], my_track_name, tempo
-                                     if settings.bpm_floor <= tempo <= settings.bpm_ceiling else tempo / 2, my_track_name))
+                                     if settings.bpm_floor <= tempo <= settings.bpm_ceiling
+                                     else tempo / 2, my_track_name))
                         match_found = True
                     track_number += 1
     db_result = cur.execute("SELECT COUNT(*) AS count_of_tracks "
@@ -226,8 +525,9 @@ def main():
                                     tracks=my_tracks)
 
     else:
-        print('⚠ There were no tracks found for the search criteria', settings.genre_searchstring, '&',
-              settings.artist_searchstring)
+        print('⚠ There were no tracks found for the search criteria: ')
+        print('|    ┕■ genre="', settings.genre_searchstring, '"')
+        print('|    ┕■ artist="', settings.artist_searchstring, '"')
 
     settings.sql_cursor.close()
     print('┕■ Spotify Run List maker completed at ', datetime.now())
