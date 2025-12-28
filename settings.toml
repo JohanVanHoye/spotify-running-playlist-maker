@@ -38,6 +38,9 @@ max_tracks_per_playlist = 0
 # Note: lowering this setting does not make the search itself any quicker.
 max_tracks_to_save = 0
 
+[bpm]
+provider = "getsongbpm"   # options: getsongbpm | acousticbrainz
+getsongbpm_api_key = "PUT-YOUR-KEY-HERE"
 
 [spotify]
 # REQUIRED: to allow this python code to interact with your spotify account,

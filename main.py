@@ -3,6 +3,7 @@ from datetime import datetime
 from models import Artist
 from settings import Settings
 from playlists import load_playlists, count_tracks_in_playlist, get_next_target_playlist, add_playlist_tracks
+from bpm_providers import build_bpm_providers, get_bpm_from_providers, normalize_bpm_for_settings
 
 
 # load and validate user settings from toml file
@@ -157,152 +158,6 @@ def discover_artists_for_genre(
     return {Artist(name=val[0], uri=val[1]) for val in discovered_artists_by_id.values()}
 
 
-# def discover_artists_for_genre(
-#     stngs,
-#     primary_market='BE',
-#     max_track_pages=20,     # 20 * 50 = ~1000 tracks scanned
-#     playlist_pages=8,       # scan first N playlist search pages
-#     expand_related=True,    # optionally expand via related artists
-# ):
-#     """
-#     Genre-agnostic artist discovery.
-#
-#     Strategy:
-#       A) Try artist search for the genre in BE; if empty, try a few fallback markets.
-#       B) If still sparse, search tracks by the same genre in BE, extract artists.
-#       C) Optionally expand discovered set via 'related artists' (1 hop).
-#
-#     Returns: set[Artist]
-#     """
-#     sp = stngs.spotify
-#     genre = stngs.genre_searchstring
-#
-#     # Inputs & safe query parts
-#     genre = (genre or stngs.genre_searchstring or "").strip()
-#     artist_hint = (stngs.artist_searchstring or "").strip()
-#
-#     parts = []
-#     if genre:
-#         parts.append(f'genre:"{genre}"')
-#     if artist_hint:
-#         parts.append(f'artist:"{artist_hint}"')
-#     q = " ".join(parts)
-#     if not q:
-#         # If the user didn't provide any filters, bail early.
-#         print("⚠ No genre/artist filters; discovery skipped.")
-#         return set()
-#
-#     # Dedup store keyed by artist ID
-#     found = {}  # artist_id -> (name, uri)
-#
-#     # ---------- A) Artist search in BE, then fallback markets ----------
-#     markets = [primary_market, 'US', 'GB', 'DE', 'FR', 'NL']
-#     for mk in markets:
-#         try:
-#             res = sp.search(q=q, market=mk, type='artist', limit=50, offset=0)
-#             items = res.get('artists', {}).get('items', []) or []
-#             for a in items:
-#                 aid = a['uri'].split(':')[-1]
-#                 found[aid] = (a['name'], a['uri'])
-#             if items:
-#                 print(f"✓ Found {len(items)} artist(s) for {q!r} in market {mk}")
-#                 break  # Stop once we have any artist hits
-#             else:
-#                 print(f"… No artists for {q!r} in market {mk}, trying next market")
-#         except Exception as ex:
-#             print(f"⚠ Artist search failed in {mk}: {ex}")
-#
-#     # ---------- B) Track search fallback (genre -> derive artists) ----------
-#     if not found:
-#         try:
-#             for page in range(max_track_pages):  # paginate tracks, derive many artists
-#                 offset = page * 50
-#                 tres = sp.search(q=q, market=primary_market, type='track', limit=50, offset=offset)
-#                 titems = tres.get('tracks', {}).get('items', []) or []
-#                 if not titems:
-#                     break
-#                 for t in titems:
-#                     for ar in (t.get('artists') or []):
-#                       #  Prefer 'id'; fallback to 'uri' only if present and well-formed.
-#                         aid = ar.get('id')
-#                         auri = ar.get('uri')
-#                         if aid:
-#                             auri = auri or f"spotify:artist:{aid}"
-#                         elif auri:
-#                             parts = auri.split(':')
-#                             if len(parts) == 3 and parts[1] == 'artist':
-#                                 aid = parts[2]
-#                             else:
-#                                 continue  # malformed or non-artist URI; skip
-#                         else:
-#                             continue  # neither id nor uri; skip
-#                         found[aid] = (ar.get('name') or '(unknown)', auri)
-#             if found:
-#                 print(f"✓ Derived {len(found)} artist(s) from tracks for {q!r} in {primary_market}")
-#             else:
-#                 print(f"… No artists derived from tracks for {q!r} in {primary_market}")
-#         except Exception as ex:
-#             print(f"⚠ Track search failed in {primary_market}: {ex}")
-#
-#     # ---------- C) Playlist harvest (broad coverage), optional ----------
-#     # Search playlists by the genre term itself; pull tracks -> extract artists.
-#     # Useful when artist genres are sparse but curators use the term in titles/descriptions.
-#     try:
-#         term = genre  # search text; not a field filter here
-#         for page in range(playlist_pages):
-#             offset = page * 50
-#             pres = sp.search(q=term, type='playlist', market=primary_market, limit=50, offset=offset)
-#             pls = pres.get('playlists', {}).get('items', []) or []
-#             if not pls:
-#                 break
-#             for pl in pls:
-#                 if pl:
-#                     pl_id = pl.get('id')
-#                 if not pl_id:
-#                     continue
-#                 pl_offset = 0
-#                 # Pull up to ~200 items per playlist (tune as needed)
-#                 while pl_offset <= 200:
-#                     ppage = sp.playlist_items(pl_id, market=primary_market, limit=100, offset=pl_offset)
-#                     trs = ppage.get('items', []) or []
-#                     if not trs:
-#                         break
-#                     for it in trs:
-#                         tr = it.get('track')
-#                         if not tr or tr.get('type') != 'track':
-#                             continue
-#                         for ar in tr.get('artists', []) or []:
-#                             if not ar.get('uri'):
-#                                 continue
-#                             aid = ar['uri'].split(':')[-1]
-#                             found[aid] = (ar['name'], ar['uri'])
-#                     if not ppage.get('next'):
-#                         break
-#                     pl_offset += 100
-#                     if len(found) % 100 == 0:
-#                         print(f"    ... Playlist harvesting ongoing; total artists now {len(found)}")
-#         if found:
-#             print(f"✓ Playlist harvest added; total artists now {len(found)}")
-#     except Exception as ex:
-#         print(f"⚠ Playlist harvest failed: {ex}")
-#
-#     # ---------- D) Related artists expansion (1 hop) ----------
-#     if expand_related and found:
-#         seeds = list(found.keys())
-#         # Cap expansion to avoid rate limits; 500 seeds is usually plenty
-#         for seed_id in seeds[:500]:
-#             try:
-#                 rel = sp.artist_related_artists(seed_id)
-#                 for a in rel.get('artists', []) or []:
-#                     aid = a['uri'].split(':')[-1]
-#                     found[aid] = (a['name'], a['uri'])
-#             except Exception as ex:
-#                 print(f"⚠ Related artists fetch failed for {seed_id}: {ex}")
-#         print(f"✓ Related expansion done; total artists now {len(found)}")
-#
-#     return {Artist(name=v[0], uri=v[1]) for v in found.values()}
-
-
 def main():
     """
     Creates playlists based on search criteria.
@@ -320,22 +175,7 @@ def main():
     print(f"Welcome", settings.spotify.me()["display_name"], "☺")
 
     # Find all artists using Search for Genre
-    # artists_to_process = set()
-    # my_limit = 50
-    # my_offset = 0
-    # api_result = None
     match_found = False
-    # q = ''
-    # if settings.genre_searchstring and settings.genre_searchstring.strip():
-    #     q = f'genre:"{settings.genre_searchstring}" '
-    # if settings.artist_searchstring and settings.artist_searchstring.strip():
-    #     q += f'artist:"{settings.artist_searchstring}"'
-    #
-    # while my_offset == 0 or (api_result['artists']['next'] and my_offset < 1000):
-    #     api_result = settings.spotify.search(q=q, market='BE', type='artist', limit=my_limit, offset=my_offset)
-    #     for searchResult in api_result['artists']['items']:
-    #         artists_to_process.add(Artist(searchResult["name"], searchResult["uri"]))
-    #     my_offset += my_limit
 
     artists_to_process = discover_artists_for_genre(settings, primary_market='BE')
     print('Search for artists in genre', settings.genre_searchstring, 'yielded', len(artists_to_process), 'results.')
@@ -375,47 +215,37 @@ def main():
                         tm.sleep(5)
                         continue
                     break
-
-                # list tracks, we'll assume no album will exceed 100 tracks for now
-                my_tracks = [track['uri'] for track in album['tracks']['items']]
-                api_result = None
-                # while True:
-                #     try:
-                #         # we'll do one API call per album, hitting the API a bit less than track per track
-                #         api_result = settings.spotify.audio_features(my_tracks)
-                #     except Exception as ex:
-                #         template = "Exception of type {0} occurred. Ignoring, pausing, then retrying:\n{1!r}"
-                #         message = template.format(type(ex).__name__, ex.args)
-                #         print(message)
-                #         tm.sleep(5)
-                #         continue
-                #     break
-                try:
-                    api_result = get_audio_features_with_retry(my_tracks)
-                    # Process the audio features here
-                except Exception as e:
-                    print(f"Failed to retrieve audio features: {e}")
-
+                
+                # Iterate tracks one-by-one and resolve BPM via external providers
+                bpm_providers = build_bpm_providers(settings)
                 track_number = 0
-                for track_feature in api_result:
-                    tempo = 0
-                    my_track_name = album['tracks']['items'][track_number]['name']
-                    # Even when fetched from API, details are not guaranteed to be available
-                    if track_feature is not None:
-                        tempo = round(track_feature['tempo'])
+                for track_obj in (album['tracks']['items'] or []):
+                    try:
+                        track_name = track_obj.get('name')
+                        track_uri = track_obj.get('uri')
+                        artist_name = ''
+                        artists_list = track_obj.get('artists') or []
+                        if artists_list:
+                            artist_name = artists_list[0].get('name') or ''
 
-                    if settings.bpm_floor <= tempo <= settings.bpm_ceiling or \
-                            settings.allow_doubled_bpm and settings.bpm_floor * 2 <= tempo <= settings.bpm_ceiling * 2:
-                        print('  √ MATCH --> ♯', my_track_name, 'is', tempo, 'BPM')
-                        # adding track to table if unique URI AND track name was not already added with another URI
-                        cur.execute("INSERT OR IGNORE INTO t_tracks (track_uri, track_name, track_bpm)"
-                                    "SELECT ?, ?, ?"
-                                    "WHERE NOT EXISTS (SELECT * FROM t_tracks WHERE track_name = ?);",
-                                    (track_feature['uri'], my_track_name, tempo
-                                     if settings.bpm_floor <= tempo <= settings.bpm_ceiling
-                                     else tempo / 2, my_track_name))
-                        match_found = True
-                    track_number += 1
+                        # Fetch BPM from providers
+                        bpm_value = get_bpm_from_providers(bpm_providers, artist_name=artist_name, track_name=track_name)
+                        normalized_bpm, norm_status = normalize_bpm_for_settings(bpm_value, settings)
+
+                        if normalized_bpm is not None:
+                            print(' √ MATCH --> ♯', track_name, 'is', normalized_bpm, 'BPM', f'({norm_status})')
+                            # Insert into DB if unique URI and unique track name
+                            cur.execute(
+                                "INSERT OR IGNORE INTO t_tracks (track_uri, track_name, track_bpm)"
+                                " SELECT ?, ?, ?"
+                                " WHERE NOT EXISTS (SELECT * FROM t_tracks WHERE track_name = ?);",
+                                (track_uri, track_name, normalized_bpm, track_name)
+                            )
+                            match_found = True
+                        track_number += 1
+                    except Exception as ex:
+                        print(f"⚠ BPM resolution failed for track #{track_number}: {ex}")
+
     db_result = cur.execute("SELECT COUNT(*) AS count_of_tracks "
                             "FROM   t_tracks t "
                             "WHERE NOT EXISTS (SELECT 1 FROM t_tracks_in_playlists tp "
@@ -533,33 +363,6 @@ def main():
     print('┕■ Spotify Run List maker completed at ', datetime.now())
 
 
-def get_audio_features_with_retry(track_uris, max_retries=5, initial_delay=1.0):
-    retries = 0
-    delay = initial_delay
-
-    while retries < max_retries:
-        try:
-            # Attempt to fetch audio features
-            # we'll do one API call per album, hitting the API a bit less than track per track
-            api_result = settings.spotify.audio_features(track_uris)
-            return api_result  # Return the result if successful
-        except settings.spotify.exceptions.SpotifyException as ex:
-            if ex.http_status == 429:
-                # If rate limit exceeded, extract Retry-After header value (in seconds)
-                retry_after = int(ex.headers.get("Retry-After", delay)) + 5
-                print(f"Rate limit exceeded. Retrying after {retry_after} seconds.")
-                tm.sleep(retry_after)
-            else:
-                print(f"SpotifyException occurred while fetching audio features: {ex}")
-                tm.sleep(delay)
-        except Exception as ex:
-            print(f"Unexpected exception occurred while fetching audio features: {ex}")
-            tm.sleep(delay)
-
-        retries += 1
-        delay *= 2  # Exponential backoff
-
-    raise Exception(f"Failed to get audio features after {max_retries} retries.")
 
 
 # Standard boilerplate to call the main() function to begin
