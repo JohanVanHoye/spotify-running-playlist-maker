@@ -4,7 +4,7 @@
 
 [scanner]
 # enter the name of a genre/tag (required), for example 'darkwave' or 'coldwave'
-#     - Genre tags come from Last.fm's community tagging — browse at https://www.last.fm/tag
+#     - Genre tags come from Last.fm's community tagging — browse at https://www.last.fm/tags
 #     - Case does not matter for the search results but whatever case you use here will show up in your playlist name(s)
 #     - Broad genres like 'metal' or 'pop' will at most yield 1000 artists
 #       (This is the maximum supported by Spotify's search API)
