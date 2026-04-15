@@ -1,0 +1,19 @@
+# Local configuration — contains API keys, never commit
+settings.toml
+
+# Persistent BPM cache — local data, no need to share
+bpm_cache.db
+
+# Spotify OAuth token cache
+.cache
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Virtual environment
+.venv/
+
+# IDE
+.idea/
+.vscode/
