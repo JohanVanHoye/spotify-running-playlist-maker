@@ -3,11 +3,160 @@ from datetime import datetime
 from models import Artist
 from settings import Settings
 from playlists import load_playlists, count_tracks_in_playlist, get_next_target_playlist, add_playlist_tracks
+from bpm_providers import build_bpm_providers, get_bpm_from_providers, normalize_bpm_for_settings, BpmResult
+from lastfm import discover_artists_via_lastfm
 
 
 # load and validate user settings from toml file
 # this object also contains SQL database engine and Spotipy client.
 settings = Settings()
+
+
+def discover_artists_for_genre(
+    _settings,
+    primary_market='BE',
+    max_track_pages=20,          # 20 * 50 = ~1000 tracks scanned
+    playlist_pages=0,            # scan first N playlist search pages
+    expand_related=False,        # optionally expand via related artists
+):
+    """
+    Genre-agnostic artist discovery.
+    Strategy:
+      A) Try artist search for the genre in the primary market; if empty, try a few fallback markets.
+      B) If still sparse, search tracks with the same query in the primary market and derive artists from track credits.
+      C) Harvest playlists whose title/description contains the genre term and derive artists from their tracks.
+      D) Optionally expand the discovered set via one-hop 'related artists'.
+    Returns: set[Artist]
+    """
+    spotify_client = _settings.spotify
+
+    # Build query safely from user-provided filters
+    genre_query = (_settings.genre_searchstring or '').strip()
+    artist_hint = (_settings.artist_searchstring or '').strip()
+    query_parts = []
+    if genre_query:
+        query_parts.append(f'genre:"{genre_query}"')
+    if artist_hint:
+        query_parts.append(f'artist:"{artist_hint}"')
+    query = ' '.join(query_parts)
+
+    if not query:
+        print("⚠ No genre/artist filters; discovery skipped.")
+        return set()
+
+    # Dedup store keyed by artist ID
+    discovered_artists_by_id = {}  # artist_id -> (artist_name, artist_uri)
+
+    # ---- Last.fm: primary discovery strategy (tag pagination + similarity graph) ----
+    try:
+        lastfm_discovered = discover_artists_via_lastfm(_settings, spotify_client)
+        discovered_artists_by_id.update(lastfm_discovered)
+        print(f"✓ Last.fm discovery yielded {len(lastfm_discovered)} artist(s) on Spotify")
+    except Exception as ex:
+        print(f"⚠ Last.fm discovery failed, falling back to Spotify search: {ex}")
+
+    # ---- A) Spotify artist search — fallback if Last.fm yielded nothing ----
+    if discovered_artists_by_id:
+        print(f"… Skipping Spotify genre search fallback (Last.fm already found artists)")
+    candidate_markets = [primary_market, 'US', 'GB', 'DE', 'FR', 'NL']
+    for market_code in candidate_markets if not discovered_artists_by_id else []:
+        try:
+            search_response = spotify_client.search(q=query, market=market_code, type='artist', limit=50, offset=0)
+            artist_items = search_response.get('artists', {}).get('items', []) or []
+            for artist in artist_items:
+                artist_id = artist['uri'].split(':')[-1]
+                discovered_artists_by_id[artist_id] = (artist['name'], artist['uri'])
+            if artist_items:
+                print(f"✓ Found {len(artist_items)} artist(s) for {query!r} in market {market_code}")
+                break  # Stop once we have any artist hits
+            else:
+                print(f"… No artists for {query!r} in market {market_code}, trying next market")
+        except Exception as ex:
+            print(f"⚠ Artist search failed in {market_code}: {ex}")
+
+    # ---- B) Track search fallback (genre -> derive artists) ----
+    if not discovered_artists_by_id:
+        try:
+            for page_index in range(max_track_pages):  # paginate tracks, derive many artists
+                offset = page_index * 50
+                track_search_response = spotify_client.search(q=query, market=primary_market,
+                                                              type='track', limit=50, offset=offset)
+                track_items = track_search_response.get('tracks', {}).get('items', []) or []
+                if not track_items:
+                    break
+                for track in track_items:
+                    for track_artist in (track.get('artists') or []):
+                        # Prefer 'id'; fallback to 'uri' only if present and well-formed.
+                        artist_id = track_artist.get('id')
+                        artist_uri = track_artist.get('uri')
+                        if artist_id:
+                            artist_uri = artist_uri or f"spotify:artist:{artist_id}"
+                        elif artist_uri:
+                            uri_parts = artist_uri.split(':')
+                            if len(uri_parts) == 3 and uri_parts[1] == 'artist':
+                                artist_id = uri_parts[2]
+                            else:
+                                continue  # malformed or non-artist URI; skip
+                        else:
+                            continue  # neither id nor uri; skip
+                        discovered_artists_by_id[artist_id] = (track_artist.get('name') or '(unknown)', artist_uri)
+            if discovered_artists_by_id:
+                print(
+                    f"✓ Derived {len(discovered_artists_by_id)} artists from tracks for {query!r} in {primary_market}")
+            else:
+                print(f"… No artists derived from tracks for {query!r} in {primary_market}")
+        except Exception as ex:
+            print(f"⚠ Track search failed in {primary_market}: {ex}")
+
+    # ---- C) Playlist harvest (broad coverage), optional ----
+    try:
+        playlist_search_term = genre_query  # free text search; not a field filter here
+        for page_index in range(playlist_pages):
+            offset = page_index * 50
+            playlist_search_response = spotify_client.search(q=playlist_search_term, type='playlist',
+                                                             market=primary_market, limit=50, offset=offset)
+            playlist_items = playlist_search_response.get('playlists', {}).get('items', []) or []
+            if not playlist_items:
+                break
+            for playlist in playlist_items:
+                if not playlist:
+                    continue
+                playlist_id = playlist.get('id')
+                if not playlist_id:
+                    continue
+                playlist_offset = 0
+                # Pull up to ~200 items per playlist (tune as needed)
+                while playlist_offset <= 200:
+                    playlist_page = spotify_client.playlist_items(playlist_id, market=primary_market,
+                                                                  limit=100, offset=playlist_offset)
+                    track_rows = playlist_page.get('items', []) or []
+                    if not track_rows:
+                        break
+                    for row in track_rows:
+                        track_obj = row.get('track')
+                        if not track_obj or track_obj.get('type') != 'track':
+                            continue
+                        for track_artist in track_obj.get('artists', []) or []:
+                            artist_uri = track_artist.get('uri')
+                            if not artist_uri:
+                                continue
+                            artist_id = artist_uri.split(':')[-1]
+                            discovered_artists_by_id[artist_id] = (track_artist['name'], artist_uri)
+                    if not playlist_page.get('next'):
+                        break
+                    playlist_offset += 100
+                if len(discovered_artists_by_id) % 100 == 0:
+                    print(f" ... Playlist harvesting ongoing; total artists now {len(discovered_artists_by_id)}")
+        if discovered_artists_by_id:
+            print(f"✓ Playlist harvest added; total artists now {len(discovered_artists_by_id)}")
+    except Exception as ex:
+        print(f"⚠ Playlist harvest failed: {ex}")
+
+    # ---- D) Related artists expansion (disabled — handled by Last.fm similarity graph) ----
+    # spotify.artist_related_artists() was removed from the Spotify API for dev-mode apps.
+    # The Last.fm similarity graph in discover_artists_via_lastfm() replaces this step.
+
+    return {Artist(name=val[0], uri=val[1]) for val in discovered_artists_by_id.values()}
 
 
 def main():
@@ -27,19 +176,9 @@ def main():
     print(f"Welcome", settings.spotify.me()["display_name"], "☺")
 
     # Find all artists using Search for Genre
-    artists_to_process = set()
-    my_limit = 50
-    my_offset = 0
-    api_result = None
     match_found = False
 
-    while my_offset == 0 or (api_result['artists']['next'] and my_offset < 1000):
-        api_result = settings.spotify.search(f'genre:"{settings.genre_searchstring}" {settings.artist_searchstring}',
-                                             type='artist', limit=my_limit, offset=my_offset)
-        for searchResult in api_result['artists']['items']:
-            artists_to_process.add(Artist(searchResult["name"], searchResult["uri"]))
-        my_offset += my_limit
-
+    artists_to_process = discover_artists_for_genre(settings, primary_market='BE')
     print('Search for artists in genre', settings.genre_searchstring, 'yielded', len(artists_to_process), 'results.')
 
     process = "?"
@@ -59,11 +198,14 @@ def main():
         if process in ("C", "c"):
             break
         if process in ("A", "a", "Y", "y"):
-            results = settings.spotify.artist_albums(artist.uri, album_type='album')
+            results = settings.spotify.artist_albums(artist_id=artist.uri, include_groups='album,single')
             albums = results['items']
             while results['next']:
                 results = settings.spotify.next(results)
                 albums.extend(results['items'])
+
+            # Build BPM providers once per artist, not per album
+            bpm_providers = build_bpm_providers(settings)
 
             for album in albums:
                 print('◌', album['name'])
@@ -78,40 +220,55 @@ def main():
                         continue
                     break
 
-                # list tracks, we'll assume no album will exceed 100 tracks for now
-                my_tracks = [track['uri'] for track in album['tracks']['items']]
-                api_result = None
-                while True:
-                    try:
-                        # we'll do one API call per album, hitting the API a bit less than track per track
-                        api_result = settings.spotify.audio_features(my_tracks)
-                    except Exception as ex:
-                        template = "Exception of type {0} occurred. Ignoring, pausing, then retrying:\n{1!r}"
-                        message = template.format(type(ex).__name__, ex.args)
-                        print(message)
-                        tm.sleep(5)
-                        continue
-                    break
-
                 track_number = 0
-                for track_feature in api_result:
-                    tempo = 0
-                    my_track_name = album['tracks']['items'][track_number]['name']
-                    # Even when fetched from API, details are not guaranteed to be available
-                    if track_feature is not None:
-                        tempo = round(track_feature['tempo'])
+                for track_obj in (album['tracks']['items'] or []):
+                    try:
+                        track_name = track_obj.get('name')
+                        track_uri = track_obj.get('uri')
+                        preview_url = track_obj.get('preview_url')
+                        artist_name = ''
+                        artists_list = track_obj.get('artists') or []
+                        if artists_list:
+                            artist_name = artists_list[0].get('name') or ''
 
-                    if settings.bpm_floor <= tempo <= settings.bpm_ceiling or \
-                            settings.allow_doubled_bpm and settings.bpm_floor * 2 <= tempo <= settings.bpm_ceiling * 2:
-                        print('  √ MATCH --> ♯', my_track_name, 'is', tempo, 'BPM')
-                        # adding track to table if unique URI AND track name was not already added with another URI
-                        cur.execute("INSERT OR IGNORE INTO t_tracks (track_uri, track_name, track_bpm)"
-                                    "SELECT ?, ?, ?"
-                                    "WHERE NOT EXISTS (SELECT * FROM t_tracks WHERE track_name = ?);",
-                                    (track_feature['uri'], my_track_name, tempo
-                                     if settings.bpm_floor <= tempo <= settings.bpm_ceiling else tempo / 2, my_track_name))
-                        match_found = True
-                    track_number += 1
+                        # Fetch BPM — check persistent cache first to avoid re-downloading
+                        cached_row = settings.bpm_cache_cursor.execute(
+                            "SELECT bpm, source FROM t_bpm_cache WHERE track_uri = ?",
+                            (track_uri,)).fetchone()
+                        if cached_row:
+                            bpm_result = BpmResult(bpm=cached_row[0], source=f"{cached_row[1]}/cached")
+                        else:
+                            bpm_result = bpm_providers[0].get_bpm(
+                                artist_name=artist_name, track_name=track_name, preview_url=preview_url)
+                            if bpm_result.bpm is not None:
+                                settings.bpm_cache_cursor.execute(
+                                    "INSERT OR REPLACE INTO t_bpm_cache (track_uri, bpm, source) VALUES (?, ?, ?)",
+                                    (track_uri, bpm_result.bpm, bpm_result.source))
+                                settings.bpm_cache.commit()
+                        bpm_value = bpm_result.bpm if bpm_result else None
+                        normalized_bpm, norm_status = normalize_bpm_for_settings(bpm_value, settings)
+
+                        if normalized_bpm is not None:
+                            print(f'  ✓ MATCH  ♯ {track_name}  →  {normalized_bpm} BPM ({norm_status})  [{bpm_result.source}]')
+                            # Insert into DB if unique URI and unique track name
+                            cur.execute(
+                                "INSERT OR IGNORE INTO t_tracks (track_uri, track_name, track_bpm)"
+                                " SELECT ?, ?, ?"
+                                " WHERE NOT EXISTS (SELECT * FROM t_tracks WHERE track_name = ?);",
+                                (track_uri, track_name, normalized_bpm, track_name)
+                            )
+                            match_found = True
+                        elif bpm_value is not None:
+                            if settings.debug:
+                                print(f'  ✗ no match  ♯ {track_name}  →  {bpm_value:.0f} BPM (out of range)  [{bpm_result.source}]')
+                        elif bpm_result and bpm_result.notes == "no preview URL (Spotify or Deezer)":
+                            print(f'  – skipped  ♯ {track_name}  →  no preview URL on Spotify or Deezer')
+                        else:
+                            print(f'  – skipped  ♯ {track_name}  →  {bpm_result.notes if bpm_result else "unknown error"}')
+                        track_number += 1
+                    except Exception as ex:
+                        print(f"⚠ BPM resolution failed for track #{track_number}: {ex}")
+
     db_result = cur.execute("SELECT COUNT(*) AS count_of_tracks "
                             "FROM   t_tracks t "
                             "WHERE NOT EXISTS (SELECT 1 FROM t_tracks_in_playlists tp "
@@ -221,11 +378,14 @@ def main():
                                     tracks=my_tracks)
 
     else:
-        print('⚠ There were no tracks found for the search criteria', settings.genre_searchstring, '&',
-              settings.artist_searchstring)
+        print('⚠ There were no tracks found for the search criteria: ')
+        print('|    ┕■ genre="', settings.genre_searchstring, '"')
+        print('|    ┕■ artist="', settings.artist_searchstring, '"')
 
     settings.sql_cursor.close()
     print('┕■ Spotify Run List maker completed at ', datetime.now())
+
+
 
 
 # Standard boilerplate to call the main() function to begin

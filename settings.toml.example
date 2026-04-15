@@ -3,19 +3,20 @@
 #################################################
 
 [scanner]
-# enter the name of a genre (required), for example 'gaming edm'
-#     - You can browse for genres at https://everynoise.com
+# enter the name of a genre/tag (required), for example 'darkwave' or 'coldwave'
+#     - Genre tags come from Last.fm's community tagging. 
+#       Search for tags at last.fm (https://www.last.fm/tag/{yourtaghere} e.g. https://www.last.fm/tag/coldwave) to find the best suitable wording
 #     - Case does not matter for the search results but whatever case you use here will show up in your playlist name(s)
 #     - Broad genres like 'metal' or 'pop' will at most yield 1000 artists
 #       (This is the maximum supported by Spotify's search API)
 #     - providing a single space will work too and will let you search across genres
 #       (for instance for particular artists that do not have genre metadata)
-genre_searchstring = 'new wave'
+genre_searchstring = 'darkwave'
 # enter a narrowing search term on artist name (optional)
 artist_searchstring = ''
 # set interactive mode to true to be asked for every artist found if you want to scan them
 # set to false to scan them all.
-interactive_mode = false
+interactive_mode = true
 
 
 [filtering]
@@ -28,25 +29,43 @@ bpm_ceiling = 92
 allow_doubled_bpm = true
 # No tracks from the playlist names you include in this setting, shall be added to the new playlist.
 # This lets you discover more exclusively music you didn't already find before. (optional)
-playlists_to_exclude = []
+# Use ["*"] to exclude ALL of your existing playlists — only brand new songs will be added.
+# Use named playlists to be more selective, e.g. ["My Playlist", "Another Playlist"]
+playlists_to_exclude = ["*"]
 # Set the maximum number of tracks per playlist, generates new playlists as needed
 # Purpose of smaller playlists is manageability, e.g. for downloading onto a smartwatch
 # 0 means unlimited, i.e. save all to the same playlist.
-max_tracks_per_playlist = 0
+max_tracks_per_playlist = 500
 # Set the overall maximum number of tracks you want to save to your playlist(s)
 # 0 means unlimited, i.e. as many as your search unearthed.
 # Note: lowering this setting does not make the search itself any quicker.
 max_tracks_to_save = 0
 
+[lastfm]
+# REQUIRED: get a free API key at https://www.last.fm/api/account/create
+api_key = "PUT-YOUR-LASTFM-API-KEY-HERE"
+# How many pages of top artists to fetch per tag (50 artists per page).
+# More pages = more obscure / long-tail artists. 5 is focused, 15 is a broad sweep.
+tag_pages = 7
+# Optional: explicit seed artists for the similarity graph expansion.
+# The app auto-seeds from the top tag results, but you can add your own favourites here
+# to pull in their neighbourhood of similar artists.
+# Example: seed_artists = ["The Frozen Autumn", "Keluar", "Sombre Présage"]
+seed_artists = []
+
+[bpm]
+# BPM is estimated locally via librosa, using each track's Spotify 30-second preview clip.
+# No external API or API key required.
+provider = "librosa"
 
 [spotify]
 # REQUIRED: to allow this python code to interact with your spotify account,
 # click "create an app" at https://developer.spotify.com/dashboard/applications
 # then copy-paste the generated Client ID and Client Secret here: 
-spotipy_client_id = ""
-spotipy_client_secret = ""
+spotipy_client_id = "PUT-YOUR-SPOTIFY-CLIENT-ID-HERE"
+spotipy_client_secret = "PUT-YOUR-SPOTIFY-CLIENT-SECRET-HERE"
 # the redirect URI could be anything. You may use the below suggested value in your app:
-spotipy_redirect_uri = "http://localhost:8888/callback"
+spotipy_redirect_uri = "http://127.0.0.1:8888/callback"
 
 [application]
 # set debug True to receive some more output on the console.

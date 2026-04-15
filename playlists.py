@@ -19,7 +19,8 @@ def load_playlists(settings):
         api_playlists = settings.spotify.user_playlists(user=user, limit=my_limit, offset=my_offset)
         for searchResult in api_playlists['items']:
             # check if this is a playlist we want to ignore tracks from
-            if searchResult["name"] in settings.playlists_to_exclude:
+            # "*" acts as a wildcard meaning "exclude all existing playlists"
+            if "*" in settings.playlists_to_exclude or searchResult["name"] in settings.playlists_to_exclude:
                 is_marked_for_exclusion = True
             else:
                 is_marked_for_exclusion = False

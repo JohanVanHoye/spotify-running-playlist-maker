@@ -1,2 +1,10 @@
-spotipy
-tomli
+certifi==2025.11.12
+charset-normalizer==3.4.4
+idna==3.11
+librosa
+requests==2.32.5
+setuptools==80.9.0
+spotipy==2.25.2
+tomli==2.3.0
+urllib3==2.6.2
+wheel==0.45.1

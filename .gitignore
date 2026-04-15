@@ -1,15 +1,19 @@
-# Byte-compiled / optimized / DLL files
+# Local configuration — contains API keys, never commit
+settings.toml
+
+# Persistent BPM cache — local data, no need to share
+bpm_cache.db
+
+# Spotify OAuth token cache
+.cache
+
+# Python
 __pycache__/
 *.py[cod]
-*$py.class
 
-# Environments
-.env
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
+# Virtual environment
+.venv/
 
-.cache
+# IDE
+.idea/
+.vscode/
