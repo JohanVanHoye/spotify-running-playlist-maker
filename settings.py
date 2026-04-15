@@ -25,16 +25,33 @@ class Settings:
         self.spotipy_client_id = _config["spotify"]["spotipy_client_id"]
         self.spotipy_client_secret = _config["spotify"]["spotipy_client_secret"]
         self.spotipy_redirect_uri = _config["spotify"]["spotipy_redirect_uri"]
+        self.lastfm_api_key = _config["lastfm"]["api_key"]
+        self.lastfm_tag_pages = _config["lastfm"].get("tag_pages", 7)
+        self.lastfm_seed_artists = _config["lastfm"].get("seed_artists", [])
         self.debug = _config["application"]["debug"]
         # the target playlist name is 'derived' from settings ==>
         self.target_playlist = f'{self.genre_searchstring} @{self.bpm_floor}-{self.bpm_ceiling} BPM dd. {date.today()}'
         # check config values
         self.validate_settings()
 
-        # provision an in-memory database
+        # provision an in-memory database (per-run deduplication and playlist tracking)
         self.sql = sqlite3.connect(":memory:")
         self.sql_cursor = self.sql.cursor()
         self.initialize_sql()
+
+        # provision a persistent BPM cache (survives across runs — avoids re-downloading
+        # and re-analysing tracks whose BPM has already been measured)
+        self.bpm_cache = sqlite3.connect("bpm_cache.db")
+        self.bpm_cache_cursor = self.bpm_cache.cursor()
+        self.bpm_cache_cursor.execute("""
+            CREATE TABLE IF NOT EXISTS t_bpm_cache (
+                track_uri  TEXT PRIMARY KEY,
+                bpm        REAL NOT NULL,
+                source     TEXT NOT NULL,
+                cached_at  TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        self.bpm_cache.commit()
 
         # prepare spotipy spotify client
         self.spotify = spotipy.Spotify(client_credentials_manager=SpotifyClientCredentials(
@@ -109,6 +126,19 @@ class Settings:
             'The "spotipy_redirect_uri" setting cannot be left blank in settings.toml.'
         assert (len(self.spotipy_redirect_uri) > 8), \
             f'The "spotipy_redirect_uri" value "{self.spotipy_redirect_uri}" in settings.toml is probably too short.'
+        assert (isinstance(self.lastfm_api_key, str)), \
+            f'The "api_key" under [lastfm] in settings.toml must be a string value ' \
+            f'(is now {type(self.lastfm_api_key).__name__}).'
+        assert (len(self.lastfm_api_key) > 0), \
+            'The Last.fm "api_key" under [lastfm] in settings.toml cannot be left blank.'
+        assert (self.lastfm_api_key != 'PUT-YOUR-LASTFM-KEY-HERE'), \
+            'Please replace "PUT-YOUR-LASTFM-KEY-HERE" with your actual Last.fm API key in settings.toml.'
+        assert (isinstance(self.lastfm_tag_pages, int) and self.lastfm_tag_pages >= 1), \
+            f'The "tag_pages" under [lastfm] in settings.toml must be a positive integer ' \
+            f'(is now {self.lastfm_tag_pages!r}).'
+        assert (isinstance(self.lastfm_seed_artists, list)), \
+            f'The "seed_artists" under [lastfm] in settings.toml must be a list ' \
+            f'(is now {type(self.lastfm_seed_artists).__name__}).'
         assert (isinstance(self.debug, bool)), \
             f'The "debug" in settings.toml must be set to either true or false, lowercase ' \
             f'(is now {type(self.debug).__name__}).'

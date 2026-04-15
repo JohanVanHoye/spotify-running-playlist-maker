@@ -1,22 +1,29 @@
-
 """
 BPM provider interfaces and helpers.
 
-This module lets the app obtain BPM/tempo values without Spotify's
-Audio Features / Audio Analysis endpoints, which are no longer available
-for most third-party apps created after Nov 27, 2024. See Spotify's
-announcement for context.
+Spotify's Audio Features / Audio Analysis endpoints are no longer available
+for third-party apps created after Nov 27, 2024. Spotify's preview_url fields
+are also now widely null across their catalogue.
 
-Providers implemented here:
-- GetSongBpmProvider: looks up BPM by artist + title via an external API (stubbed).
-- AcousticBrainzProvider: optional, MBID-based lookup (stub/starter).
-- LocalFileProvider: placeholder for local file analysis (e.g., librosa/Essentia).
+Provider implemented:
+- LocalAudioBpmProvider: resolves a 30-second preview audio clip and analyses
+  tempo locally using librosa. No external API key required.
 
-All providers return a BpmResult with (bpm, source, confidence, notes).
+  Preview URL resolution order:
+    1. Spotify preview_url (passed in from the track object, often null now)
+    2. Deezer public search API (free, no key, good catalogue coverage)
+    3. Give up — return bpm=None for this track
+
+  The source field in BpmResult reflects where the preview came from:
+  "librosa/spotify" or "librosa/deezer".
 """
 from __future__ import annotations
+import os
+import tempfile
+import urllib.parse
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, List, Iterable
+import numpy as np
 
 
 @dataclass
@@ -28,108 +35,119 @@ class BpmResult:
 
 
 class BpmProvider:
-    def get_bpm(self, artist_name: str, track_name: str, isrc: Optional[str] = None) -> BpmResult:
+    def get_bpm(self, artist_name: str, track_name: str,
+                isrc: Optional[str] = None,
+                preview_url: Optional[str] = None) -> BpmResult:
         raise NotImplementedError
 
 
-class GetSongBpmProvider(BpmProvider):
+def _get_deezer_preview(artist_name: str, track_name: str) -> Optional[str]:
     """
-    A thin client around an external BPM catalog (e.g., getsongbpm.com).
-
-    This is a *starter implementation*. You'll need to:
-      - Provide your API key via settings.getsongbpm_api_key
-      - Fill in the actual endpoint/params according to the vendor's docs
-      - Map response JSON to a BPM float
-
-    The code attempts to import 'requests'; if unavailable, it falls back to urllib.
+    Search Deezer for a track and return its 30-second preview MP3 URL.
+    Uses Deezer's public search API — no API key required.
+    Returns None if no match is found or on any error.
     """
-    def __init__(self, api_key: str, timeout: float = 8.0):
-        self.api_key = api_key
-        self.timeout = timeout
-
-    def _http_get_json(self, url: str) -> Optional[dict]:
-        try:
-            try:
-                import requests  # type: ignore
-                r = requests.get(url, timeout=self.timeout)
-                if r.status_code == 200:
-                    return r.json()
-                return None
-            except Exception:
-                # Fallback to stdlib
-                import json
-                import urllib.request
-                with urllib.request.urlopen(url, timeout=self.timeout) as resp:
-                    if resp.status == 200:
-                        return json.loads(resp.read().decode('utf-8'))
-                return None
-        except Exception:
-            return None
-
-    def get_bpm(self, artist_name: str, track_name: str, isrc: Optional[str] = None) -> BpmResult:
-        if not self.api_key:
-            return BpmResult(bpm=None, source="GetSongBPM", notes="missing API key")
-
-        # TODO: Replace with the provider's documented endpoint. The below is a placeholder.
-        # For example purposes, we URL-encode a simple query built from artist + title.
-        import urllib.parse
-        query = urllib.parse.quote_plus(f"{artist_name} {track_name}")
-        # Example placeholder URL (NOT the real API):
-        url = f"https://api.getsongbpm.com/search/?api_key={self.api_key}&type=song&lookup={query}"
-        data = self._http_get_json(url)
-
-        bpm = None
-        if isinstance(data, dict):
-            # Map real structure here. Placeholder expects something like:
-            # {'search': {'song': [{'tempo': '128.0', ...}, ...]}}
-            try:
-                songs = data.get('search', {}).get('song', [])
-                if songs:
-                    # naive: take first result tempo, if present
-                    raw = songs[0].get('tempo')
-                    if raw is not None:
-                        bpm = float(raw)
-            except Exception:
-                bpm = None
-        return BpmResult(bpm=bpm, source="GetSongBPM", confidence=None,
-                         notes="stub mapping; adjust to real API response")
-
-
-class AcousticBrainzProvider(BpmProvider):
-    """
-    Optional provider that queries AcousticBrainz by MBID (if you have it).
-    Note: AcousticBrainz project ended in 2022; data quality/coverage can be uneven.
-    This is a placeholder; wire an MBID resolver if you want to use it.
-    """
-    def __init__(self):
+    try:
+        import requests
+        # Simple combined query — more robust than strict field:value syntax
+        query = urllib.parse.quote(f"{artist_name} {track_name}")
+        url = f"https://api.deezer.com/search?q={query}&limit=5"
+        response = requests.get(url, timeout=8)
+        if response.status_code == 200:
+            for item in response.json().get("data", []):
+                preview = item.get("preview")
+                if preview:
+                    return preview
+    except Exception:
         pass
+    return None
 
-    def get_bpm(self, artist_name: str, track_name: str, isrc: Optional[str] = None) -> BpmResult:
-        return BpmResult(bpm=None, source="AcousticBrainz", notes="not implemented")
 
-class LocalFileProvider(BpmProvider):
+def _analyse_preview(audio_url: str, source_label: str) -> BpmResult:
     """
-    Placeholder for local audio BPM estimation (e.g., librosa or Essentia) on files you own.
+    Download an MP3 preview URL to a temp file and estimate BPM with librosa.
+    source_label is embedded in the returned BpmResult for traceability.
+    C-level stderr is suppressed during loading to silence mpg123/libsndfile
+    noise (e.g. benign ID3v2 tag warnings) that cannot be caught via Python.
     """
-    def get_bpm_for_file(self, audio_path: str) -> BpmResult:
-        return BpmResult(bpm=None, source="LocalFile", notes="not implemented")
+    tmp_path = None
+    try:
+        import requests
+        import librosa
+
+        response = requests.get(audio_url, timeout=15)
+        if response.status_code != 200:
+            return BpmResult(bpm=None, source=source_label,
+                             notes=f"download failed (HTTP {response.status_code})")
+
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
+            tmp.write(response.content)
+            tmp_path = tmp.name
+
+        # Suppress C-level stderr during load (mpg123 ID3 tag warnings etc.)
+        devnull_fd = os.open(os.devnull, os.O_WRONLY)
+        saved_stderr_fd = os.dup(2)
+        os.dup2(devnull_fd, 2)
+        try:
+            y, sr = librosa.load(tmp_path, sr=None, mono=True)
+        finally:
+            os.dup2(saved_stderr_fd, 2)
+            os.close(saved_stderr_fd)
+            os.close(devnull_fd)
+
+        tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
+        # librosa >= 0.10 returns tempo as a 1-element ndarray rather than a scalar
+        bpm = float(np.atleast_1d(tempo)[0])
+        return BpmResult(bpm=bpm, source=source_label)
+
+    except Exception as ex:
+        return BpmResult(bpm=None, source=source_label, notes=f"analysis error: {ex}")
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+
+class LocalAudioBpmProvider(BpmProvider):
+    """
+    Estimates BPM from a 30-second audio preview using librosa.
+
+    Tries Spotify's preview_url first; if absent (now common after Spotify's
+    Nov 2024 API changes), falls back to Deezer's public search API to obtain
+    a preview clip for the same track.
+    """
+
+    def get_bpm(self, artist_name: str, track_name: str,
+                isrc: Optional[str] = None,
+                preview_url: Optional[str] = None) -> BpmResult:
+
+        # 1. Try Spotify preview URL
+        if preview_url:
+            return _analyse_preview(preview_url, source_label="librosa/spotify")
+
+        # 2. Fall back to Deezer
+        deezer_url = _get_deezer_preview(artist_name, track_name)
+        if deezer_url:
+            return _analyse_preview(deezer_url, source_label="librosa/deezer")
+
+        # 3. No preview available from either source
+        return BpmResult(bpm=None, source="librosa", notes="no preview URL (Spotify or Deezer)")
+
 
 # ----------------- Helper functions -----------------
 
 def build_bpm_providers(settings) -> List[BpmProvider]:
-    providers: List[BpmProvider] = []
-    api_key = getattr(settings, 'getsongbpm_api_key', None) or getattr(getattr(settings, 'bpm', None), 'getsongbpm_api_key', None)
-    if api_key:
-        providers.append(GetSongBpmProvider(api_key=api_key))
-    # Enable AcousticBrainz if desired later
-    # if getattr(settings, 'enable_acousticbrainz', False):
-    #     providers.append(AcousticBrainzProvider())
-    return providers
+    return [LocalAudioBpmProvider()]
 
 
-def get_bpm_from_providers(providers: Iterable[BpmProvider], artist_name: str, track_name: str) -> Optional[float]:
+def get_bpm_from_providers(providers: Iterable[BpmProvider], artist_name: str,
+                            track_name: str,
+                            preview_url: Optional[str] = None) -> Optional[float]:
     for p in providers:
-        res = p.get_bpm(artist_name=artist_name, track_name=track_name)
+        res = p.get_bpm(artist_name=artist_name, track_name=track_name,
+                        preview_url=preview_url)
         if res and res.bpm:
             return float(res.bpm)
     return None

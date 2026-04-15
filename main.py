@@ -3,7 +3,8 @@ from datetime import datetime
 from models import Artist
 from settings import Settings
 from playlists import load_playlists, count_tracks_in_playlist, get_next_target_playlist, add_playlist_tracks
-from bpm_providers import build_bpm_providers, get_bpm_from_providers, normalize_bpm_for_settings
+from bpm_providers import build_bpm_providers, get_bpm_from_providers, normalize_bpm_for_settings, BpmResult
+from lastfm import discover_artists_via_lastfm
 
 
 # load and validate user settings from toml file
@@ -46,9 +47,19 @@ def discover_artists_for_genre(
     # Dedup store keyed by artist ID
     discovered_artists_by_id = {}  # artist_id -> (artist_name, artist_uri)
 
-    # ---- A) Artist search in primary, then fallback markets ----
+    # ---- Last.fm: primary discovery strategy (tag pagination + similarity graph) ----
+    try:
+        lastfm_discovered = discover_artists_via_lastfm(_settings, spotify_client)
+        discovered_artists_by_id.update(lastfm_discovered)
+        print(f"✓ Last.fm discovery yielded {len(lastfm_discovered)} artist(s) on Spotify")
+    except Exception as ex:
+        print(f"⚠ Last.fm discovery failed, falling back to Spotify search: {ex}")
+
+    # ---- A) Spotify artist search — fallback if Last.fm yielded nothing ----
+    if discovered_artists_by_id:
+        print(f"… Skipping Spotify genre search fallback (Last.fm already found artists)")
     candidate_markets = [primary_market, 'US', 'GB', 'DE', 'FR', 'NL']
-    for market_code in candidate_markets:
+    for market_code in candidate_markets if not discovered_artists_by_id else []:
         try:
             search_response = spotify_client.search(q=query, market=market_code, type='artist', limit=50, offset=0)
             artist_items = search_response.get('artists', {}).get('items', []) or []
@@ -141,19 +152,9 @@ def discover_artists_for_genre(
     except Exception as ex:
         print(f"⚠ Playlist harvest failed: {ex}")
 
-    # ---- D) Related artists expansion (1 hop) ----
-    if expand_related and discovered_artists_by_id:
-        seed_artist_ids = list(discovered_artists_by_id.keys())
-        # Cap expansion to avoid rate limits; 500 seeds is usually plenty
-        for seed_id in seed_artist_ids[:500]:
-            try:
-                related_response = spotify_client.artist_related_artists(seed_id)
-                for related in related_response.get('artists', []) or []:
-                    related_id = related['uri'].split(':')[-1]
-                    discovered_artists_by_id[related_id] = (related['name'], related['uri'])
-            except Exception as ex:
-                print(f"⚠ Related artists fetch failed for {seed_id}: {ex}")
-        print(f"✓ Related expansion done; total artists now {len(discovered_artists_by_id)}")
+    # ---- D) Related artists expansion (disabled — handled by Last.fm similarity graph) ----
+    # spotify.artist_related_artists() was removed from the Spotify API for dev-mode apps.
+    # The Last.fm similarity graph in discover_artists_via_lastfm() replaces this step.
 
     return {Artist(name=val[0], uri=val[1]) for val in discovered_artists_by_id.values()}
 
@@ -203,6 +204,9 @@ def main():
                 results = settings.spotify.next(results)
                 albums.extend(results['items'])
 
+            # Build BPM providers once per artist, not per album
+            bpm_providers = build_bpm_providers(settings)
+
             for album in albums:
                 print('◌', album['name'])
                 while True:
@@ -215,25 +219,37 @@ def main():
                         tm.sleep(5)
                         continue
                     break
-                
-                # Iterate tracks one-by-one and resolve BPM via external providers
-                bpm_providers = build_bpm_providers(settings)
+
                 track_number = 0
                 for track_obj in (album['tracks']['items'] or []):
                     try:
                         track_name = track_obj.get('name')
                         track_uri = track_obj.get('uri')
+                        preview_url = track_obj.get('preview_url')
                         artist_name = ''
                         artists_list = track_obj.get('artists') or []
                         if artists_list:
                             artist_name = artists_list[0].get('name') or ''
 
-                        # Fetch BPM from providers
-                        bpm_value = get_bpm_from_providers(bpm_providers, artist_name=artist_name, track_name=track_name)
+                        # Fetch BPM — check persistent cache first to avoid re-downloading
+                        cached_row = settings.bpm_cache_cursor.execute(
+                            "SELECT bpm, source FROM t_bpm_cache WHERE track_uri = ?",
+                            (track_uri,)).fetchone()
+                        if cached_row:
+                            bpm_result = BpmResult(bpm=cached_row[0], source=f"{cached_row[1]}/cached")
+                        else:
+                            bpm_result = bpm_providers[0].get_bpm(
+                                artist_name=artist_name, track_name=track_name, preview_url=preview_url)
+                            if bpm_result.bpm is not None:
+                                settings.bpm_cache_cursor.execute(
+                                    "INSERT OR REPLACE INTO t_bpm_cache (track_uri, bpm, source) VALUES (?, ?, ?)",
+                                    (track_uri, bpm_result.bpm, bpm_result.source))
+                                settings.bpm_cache.commit()
+                        bpm_value = bpm_result.bpm if bpm_result else None
                         normalized_bpm, norm_status = normalize_bpm_for_settings(bpm_value, settings)
 
                         if normalized_bpm is not None:
-                            print(' √ MATCH --> ♯', track_name, 'is', normalized_bpm, 'BPM', f'({norm_status})')
+                            print(f'  ✓ MATCH  ♯ {track_name}  →  {normalized_bpm} BPM ({norm_status})  [{bpm_result.source}]')
                             # Insert into DB if unique URI and unique track name
                             cur.execute(
                                 "INSERT OR IGNORE INTO t_tracks (track_uri, track_name, track_bpm)"
@@ -242,6 +258,13 @@ def main():
                                 (track_uri, track_name, normalized_bpm, track_name)
                             )
                             match_found = True
+                        elif bpm_value is not None:
+                            if settings.debug:
+                                print(f'  ✗ no match  ♯ {track_name}  →  {bpm_value:.0f} BPM (out of range)  [{bpm_result.source}]')
+                        elif bpm_result and bpm_result.notes == "no preview URL (Spotify or Deezer)":
+                            print(f'  – skipped  ♯ {track_name}  →  no preview URL on Spotify or Deezer')
+                        else:
+                            print(f'  – skipped  ♯ {track_name}  →  {bpm_result.notes if bpm_result else "unknown error"}')
                         track_number += 1
                     except Exception as ex:
                         print(f"⚠ BPM resolution failed for track #{track_number}: {ex}")
