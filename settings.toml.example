@@ -4,7 +4,8 @@
 
 [scanner]
 # enter the name of a genre/tag (required), for example 'darkwave' or 'coldwave'
-#     - Genre tags come from Last.fm's community tagging — search for tags at last.fm to find the right wording
+#     - Genre tags come from Last.fm's community tagging. 
+#       Search for tags at last.fm (https://www.last.fm/tag/{yourtaghere} e.g. https://www.last.fm/tag/coldwave) to find the best suitable wording
 #     - Case does not matter for the search results but whatever case you use here will show up in your playlist name(s)
 #     - Broad genres like 'metal' or 'pop' will at most yield 1000 artists
 #       (This is the maximum supported by Spotify's search API)
@@ -30,11 +31,11 @@ allow_doubled_bpm = true
 # This lets you discover more exclusively music you didn't already find before. (optional)
 # Use ["*"] to exclude ALL of your existing playlists — only brand new songs will be added.
 # Use named playlists to be more selective, e.g. ["My Playlist", "Another Playlist"]
-playlists_to_exclude = []
+playlists_to_exclude = ["*"]
 # Set the maximum number of tracks per playlist, generates new playlists as needed
 # Purpose of smaller playlists is manageability, e.g. for downloading onto a smartwatch
 # 0 means unlimited, i.e. save all to the same playlist.
-max_tracks_per_playlist = 0
+max_tracks_per_playlist = 500
 # Set the overall maximum number of tracks you want to save to your playlist(s)
 # 0 means unlimited, i.e. as many as your search unearthed.
 # Note: lowering this setting does not make the search itself any quicker.
