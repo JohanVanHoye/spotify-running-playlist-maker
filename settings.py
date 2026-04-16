@@ -51,6 +51,27 @@ class Settings:
                 cached_at  TEXT NOT NULL DEFAULT (datetime('now'))
             )
         """)
+        # t_artists_processed: records which artists have been fully scanned so that
+        # interrupted runs can skip them on the next invocation.
+        self.bpm_cache_cursor.execute("""
+            CREATE TABLE IF NOT EXISTS t_artists_processed (
+                artist_uri   TEXT PRIMARY KEY,
+                artist_name  TEXT NOT NULL,
+                processed_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        # t_tracks_matched: raw (un-normalized) BPM for every track that had a result.
+        # Raw BPM is stored so that re-runs with different floor/ceiling settings can
+        # re-normalize without re-downloading the audio.
+        self.bpm_cache_cursor.execute("""
+            CREATE TABLE IF NOT EXISTS t_tracks_matched (
+                track_uri   TEXT PRIMARY KEY,
+                track_name  TEXT NOT NULL,
+                artist_uri  TEXT NOT NULL,
+                raw_bpm     REAL,
+                bpm_source  TEXT NOT NULL DEFAULT ''
+            )
+        """)
         self.bpm_cache.commit()
 
         # prepare spotipy spotify client

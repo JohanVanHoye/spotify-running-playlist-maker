@@ -179,110 +179,163 @@ def main():
 
     # Find all artists using Search for Genre
     match_found = False
+    stop_early = False
 
     artists_to_process = discover_artists_for_genre(settings, primary_market='BE')
     print('Search for artists in genre', settings.genre_searchstring, 'yielded', len(artists_to_process), 'results.')
 
     process = "?"
-    for artist in artists_to_process:
-        print('')
-        print('♫', artist.name.upper())
-        print('=' * 80)
-        if settings.interactive_mode:
-            if process not in ("A", "a"):
-                process = "?"
-            while process not in ("", "Y", "N", "C", "A", "y", "n", "c", "a"):
-                process = input("Process this artist? (Enter = Yes; N = No, skip; C = Cancel, "
-                                "stop processing any more artists, A = Yes to all): ") or "Y"
-        else:
-            # all artists are processed in non-interactive mode
-            process = "A"
-        if process in ("C", "c"):
-            break
-        if process in ("A", "a", "Y", "y"):
-            results = settings.spotify.artist_albums(artist_id=artist.uri, include_groups='album,single')
-            albums = results['items']
-            while results['next']:
-                results = settings.spotify.next(results)
-                albums.extend(results['items'])
-
-            # Build BPM providers once per artist, not per album
-            bpm_providers = build_bpm_providers(settings)
-
-            for album in albums:
-                print('◌', album['name'])
-                while True:
-                    try:
-                        album = settings.spotify.album(album['uri'])
-                        tm.sleep(0.1)   # gentle pacing — avoids exhausting Spotify's rate limit
-                    except Exception as ex:
-                        ex_str = str(ex)
-                        retry_match = re.search(r'Retry will occur after:\s*(\d+)', ex_str)
-                        if retry_match:
-                            wait_secs = int(retry_match.group(1))
-                            if wait_secs > 300:
-                                print(f"\n⛔ Spotify rate limit exhausted — retry allowed in "
-                                      f"{wait_secs // 3600}h {(wait_secs % 3600) // 60}m ({wait_secs}s).")
-                                print("   The BPM cache preserves all work done so far.")
-                                print("   Run the program again after the wait period.")
-                                settings.sql_cursor.close()
-                                sys.exit(1)
-                            print(f"… Spotify rate limited, waiting {wait_secs}s before retry...")
-                            tm.sleep(wait_secs + 1)
-                        else:
-                            print(f"⚠ {type(ex).__name__}: {ex} — pausing 5s then retrying")
-                            tm.sleep(5)
-                        continue
-                    break
-
-                track_number = 0
-                for track_obj in (album['tracks']['items'] or []):
-                    try:
-                        track_name = track_obj.get('name')
-                        track_uri = track_obj.get('uri')
-                        preview_url = track_obj.get('preview_url')
-                        artist_name = ''
-                        artists_list = track_obj.get('artists') or []
-                        if artists_list:
-                            artist_name = artists_list[0].get('name') or ''
-
-                        # Fetch BPM — check persistent cache first to avoid re-downloading
-                        cached_row = settings.bpm_cache_cursor.execute(
-                            "SELECT bpm, source FROM t_bpm_cache WHERE track_uri = ?",
-                            (track_uri,)).fetchone()
-                        if cached_row:
-                            bpm_result = BpmResult(bpm=cached_row[0], source=f"{cached_row[1]}/cached")
-                        else:
-                            bpm_result = bpm_providers[0].get_bpm(
-                                artist_name=artist_name, track_name=track_name, preview_url=preview_url)
-                            if bpm_result.bpm is not None:
-                                settings.bpm_cache_cursor.execute(
-                                    "INSERT OR REPLACE INTO t_bpm_cache (track_uri, bpm, source) VALUES (?, ?, ?)",
-                                    (track_uri, bpm_result.bpm, bpm_result.source))
-                                settings.bpm_cache.commit()
-                        bpm_value = bpm_result.bpm if bpm_result else None
-                        normalized_bpm, norm_status = normalize_bpm_for_settings(bpm_value, settings)
-
-                        if normalized_bpm is not None:
-                            print(f'  ✓ MATCH  ♯ {track_name}  →  {normalized_bpm} BPM ({norm_status})  [{bpm_result.source}]')
-                            # Insert into DB if unique URI and unique track name
+    try:
+        for artist in artists_to_process:
+            print('')
+            print('♫', artist.name.upper())
+            print('=' * 80)
+            if settings.interactive_mode:
+                if process not in ("A", "a"):
+                    process = "?"
+                while process not in ("", "Y", "N", "C", "A", "y", "n", "c", "a"):
+                    process = input("Process this artist? (Enter = Yes; N = No, skip; C = Cancel, "
+                                    "stop processing any more artists, A = Yes to all): ") or "Y"
+            else:
+                # all artists are processed in non-interactive mode
+                process = "A"
+            if process in ("C", "c"):
+                break
+            if process in ("A", "a", "Y", "y"):
+                # Resumability: check if this artist was fully processed in a previous run.
+                # If so, reload their matched tracks from disk and re-normalize against current
+                # settings (floor/ceiling/doubling rules may have changed between runs).
+                already_done = settings.bpm_cache_cursor.execute(
+                    "SELECT 1 FROM t_artists_processed WHERE artist_uri = ?",
+                    (artist.uri,)).fetchone()
+                if already_done:
+                    prev_tracks = settings.bpm_cache_cursor.execute(
+                        "SELECT track_uri, track_name, raw_bpm, bpm_source "
+                        "FROM t_tracks_matched WHERE artist_uri = ?",
+                        (artist.uri,)).fetchall()
+                    reloaded = 0
+                    for t_uri, t_name, raw_bpm, bpm_source in prev_tracks:
+                        norm_bpm, _ = normalize_bpm_for_settings(raw_bpm, settings)
+                        if norm_bpm is not None:
                             cur.execute(
                                 "INSERT OR IGNORE INTO t_tracks (track_uri, track_name, track_bpm)"
                                 " SELECT ?, ?, ?"
                                 " WHERE NOT EXISTS (SELECT * FROM t_tracks WHERE track_name = ?);",
-                                (track_uri, track_name, normalized_bpm, track_name)
-                            )
+                                (t_uri, t_name, norm_bpm, t_name))
                             match_found = True
-                        elif bpm_value is not None:
-                            if settings.debug:
-                                print(f'  ✗ no match  ♯ {track_name}  →  {bpm_value:.0f} BPM (out of range)  [{bpm_result.source}]')
-                        elif bpm_result and bpm_result.notes == "no preview URL (Spotify or Deezer)":
-                            print(f'  – skipped  ♯ {track_name}  →  no preview URL on Spotify or Deezer')
-                        else:
-                            print(f'  – skipped  ♯ {track_name}  →  {bpm_result.notes if bpm_result else "unknown error"}')
-                        track_number += 1
-                    except Exception as ex:
-                        print(f"⚠ BPM resolution failed for track #{track_number}: {ex}")
+                            reloaded += 1
+                    print(f'  ↩ Previously processed — {reloaded} track(s) reloaded from cache.')
+                    continue
+
+                results = settings.spotify.artist_albums(artist_id=artist.uri, include_groups='album,single')
+                albums = results['items']
+                while results['next']:
+                    results = settings.spotify.next(results)
+                    albums.extend(results['items'])
+
+                # Build BPM providers once per artist, not per album
+                bpm_providers = build_bpm_providers(settings)
+
+                for album in albums:
+                    print('◌', album['name'])
+                    while True:
+                        try:
+                            album = settings.spotify.album(album['uri'])
+                            tm.sleep(0.1)   # gentle pacing — avoids exhausting Spotify's rate limit
+                        except Exception as ex:
+                            ex_str = str(ex)
+                            retry_match = re.search(r'Retry will occur after:\s*(\d+)', ex_str)
+                            if retry_match:
+                                wait_secs = int(retry_match.group(1))
+                                if wait_secs > 300:
+                                    print(f"\n⛔ Spotify rate limit — retry allowed in "
+                                          f"{wait_secs // 3600}h {(wait_secs % 3600) // 60}m ({wait_secs}s).")
+                                    print("   Saving matched tracks found so far, then exiting.")
+                                    stop_early = True
+                                    break   # exits the 'while True' retry loop
+                                print(f"… Spotify rate limited, waiting {wait_secs}s before retry...")
+                                tm.sleep(wait_secs + 1)
+                            else:
+                                print(f"⚠ {type(ex).__name__}: {ex} — pausing 5s then retrying")
+                                tm.sleep(5)
+                            continue
+                        break
+                    if stop_early:
+                        break   # exits the 'for album in albums' loop
+
+                    track_number = 0
+                    for track_obj in (album['tracks']['items'] or []):
+                        try:
+                            track_name = track_obj.get('name')
+                            track_uri = track_obj.get('uri')
+                            preview_url = track_obj.get('preview_url')
+                            artist_name = ''
+                            artists_list = track_obj.get('artists') or []
+                            if artists_list:
+                                artist_name = artists_list[0].get('name') or ''
+
+                            # Fetch BPM — check persistent cache first to avoid re-downloading
+                            cached_row = settings.bpm_cache_cursor.execute(
+                                "SELECT bpm, source FROM t_bpm_cache WHERE track_uri = ?",
+                                (track_uri,)).fetchone()
+                            if cached_row:
+                                bpm_result = BpmResult(bpm=cached_row[0], source=f"{cached_row[1]}/cached")
+                            else:
+                                bpm_result = bpm_providers[0].get_bpm(
+                                    artist_name=artist_name, track_name=track_name, preview_url=preview_url)
+                                if bpm_result.bpm is not None:
+                                    settings.bpm_cache_cursor.execute(
+                                        "INSERT OR REPLACE INTO t_bpm_cache (track_uri, bpm, source) VALUES (?, ?, ?)",
+                                        (track_uri, bpm_result.bpm, bpm_result.source))
+                            bpm_value = bpm_result.bpm if bpm_result else None
+                            normalized_bpm, norm_status = normalize_bpm_for_settings(bpm_value, settings)
+
+                            # Persist raw BPM to t_tracks_matched for resumability.
+                            # Stored un-normalized so re-runs with different floor/ceiling can re-evaluate.
+                            if bpm_value is not None:
+                                settings.bpm_cache_cursor.execute(
+                                    "INSERT OR REPLACE INTO t_tracks_matched "
+                                    "(track_uri, track_name, artist_uri, raw_bpm, bpm_source) "
+                                    "VALUES (?, ?, ?, ?, ?)",
+                                    (track_uri, track_name, artist.uri, bpm_value, bpm_result.source))
+
+                            if normalized_bpm is not None:
+                                print(f'  ✓ MATCH  ♯ {track_name}  →  {normalized_bpm} BPM ({norm_status})  [{bpm_result.source}]')
+                                # Insert into DB if unique URI and unique track name
+                                cur.execute(
+                                    "INSERT OR IGNORE INTO t_tracks (track_uri, track_name, track_bpm)"
+                                    " SELECT ?, ?, ?"
+                                    " WHERE NOT EXISTS (SELECT * FROM t_tracks WHERE track_name = ?);",
+                                    (track_uri, track_name, normalized_bpm, track_name)
+                                )
+                                match_found = True
+                            elif bpm_value is not None:
+                                if settings.debug:
+                                    print(f'  ✗ no match  ♯ {track_name}  →  {bpm_value:.0f} BPM (out of range)  [{bpm_result.source}]')
+                            elif bpm_result and bpm_result.notes == "no preview URL (Spotify or Deezer)":
+                                print(f'  – skipped  ♯ {track_name}  →  no preview URL on Spotify or Deezer')
+                            else:
+                                print(f'  – skipped  ♯ {track_name}  →  {bpm_result.notes if bpm_result else "unknown error"}')
+                            track_number += 1
+                        except Exception as ex:
+                            print(f"⚠ BPM resolution failed for track #{track_number}: {ex}")
+
+                # Mark this artist as fully processed only if we completed all their albums.
+                # Interrupted artists are NOT marked — they'll be re-processed on the next run,
+                # with partial t_tracks_matched rows safely overwritten by INSERT OR REPLACE.
+                if not stop_early:
+                    settings.bpm_cache_cursor.execute(
+                        "INSERT OR REPLACE INTO t_artists_processed (artist_uri, artist_name) "
+                        "VALUES (?, ?)",
+                        (artist.uri, artist.name))
+                    settings.bpm_cache.commit()
+
+                if stop_early:
+                    break   # exits the 'for artist in artists_to_process' loop
+
+    except KeyboardInterrupt:
+        print("\n\n⚡ Interrupted by user — saving matched tracks found so far...")
+        stop_early = True
 
     db_result = cur.execute("SELECT COUNT(*) AS count_of_tracks "
                             "FROM   t_tracks t "
@@ -318,9 +371,9 @@ def main():
         my_api_limit = 95  # The add tracks to playlist API allows maximum 100 tracks at a time
         my_tracks = []
         query = """
-        SELECT t.track_uri FROM t_tracks t 
-        WHERE NOT EXISTS (SELECT 1 FROM t_tracks_in_playlists p 
-                          WHERE t.ROWID = p.track_id LIMIT 1) 
+        SELECT t.track_uri FROM t_tracks t
+        WHERE NOT EXISTS (SELECT 1 FROM t_tracks_in_playlists p
+                          WHERE t.ROWID = p.track_id LIMIT 1)
         ORDER BY track_bpm ASC, track_order ASC;
         """
         # we're fetching the full list because database manipulations inside the loop
