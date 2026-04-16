@@ -263,16 +263,24 @@ def main():
                     if stop_early:
                         break   # exits the 'for album in albums' loop
 
+                    track_items = album['tracks']['items'] or []
+                    total_tracks = len(track_items)
                     track_number = 0
-                    for track_obj in (album['tracks']['items'] or []):
+                    album_match_count = 0
+                    for track_obj in track_items:
                         try:
-                            track_name = track_obj.get('name')
+                            track_name = track_obj.get('name') or ''
                             track_uri = track_obj.get('uri')
                             preview_url = track_obj.get('preview_url')
                             artist_name = ''
                             artists_list = track_obj.get('artists') or []
                             if artists_list:
                                 artist_name = artists_list[0].get('name') or ''
+
+                            # In-place progress line — overwrites itself each track
+                            display_name = track_name[:52] if len(track_name) > 52 else track_name
+                            print(f'  ♩ {track_number + 1}/{total_tracks}  {display_name}',
+                                  end='\r', flush=True)
 
                             # Fetch BPM — check persistent cache first to avoid re-downloading
                             cached_row = settings.bpm_cache_cursor.execute(
@@ -300,8 +308,6 @@ def main():
                                     (track_uri, track_name, artist.uri, bpm_value, bpm_result.source))
 
                             if normalized_bpm is not None:
-                                print(f'  ✓ MATCH  ♯ {track_name}  →  {normalized_bpm} BPM ({norm_status})  [{bpm_result.source}]')
-                                # Insert into DB if unique URI and unique track name
                                 cur.execute(
                                     "INSERT OR IGNORE INTO t_tracks (track_uri, track_name, track_bpm)"
                                     " SELECT ?, ?, ?"
@@ -309,16 +315,19 @@ def main():
                                     (track_uri, track_name, normalized_bpm, track_name)
                                 )
                                 match_found = True
-                            elif bpm_value is not None:
-                                if settings.debug:
-                                    print(f'  ✗ no match  ♯ {track_name}  →  {bpm_value:.0f} BPM (out of range)  [{bpm_result.source}]')
-                            elif bpm_result and bpm_result.notes == "no preview URL (Spotify or Deezer)":
-                                print(f'  – skipped  ♯ {track_name}  →  no preview URL on Spotify or Deezer')
-                            else:
-                                print(f'  – skipped  ♯ {track_name}  →  {bpm_result.notes if bpm_result else "unknown error"}')
+                                album_match_count += 1
                             track_number += 1
                         except Exception as ex:
-                            print(f"⚠ BPM resolution failed for track #{track_number}: {ex}")
+                            track_number += 1
+                            print(f"\n  ⚠ BPM resolution failed for track #{track_number}: {ex}")
+
+                    # Album summary: one line if any matches; silently clear progress line if none
+                    if album_match_count > 0:
+                        match_word = "match" if album_match_count == 1 else "matches"
+                        print(f'  ✓ {album_match_count} {match_word} / {total_tracks} tracks'
+                              + ' ' * 20)   # trailing spaces erase any leftover progress text
+                    else:
+                        print(' ' * 70, end='\r', flush=True)   # clear progress line, no output
 
                 # Mark this artist as fully processed only if we completed all their albums.
                 # Interrupted artists are NOT marked — they'll be re-processed on the next run,
