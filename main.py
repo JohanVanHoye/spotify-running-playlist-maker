@@ -1,3 +1,5 @@
+import re
+import sys
 import time as tm
 from datetime import datetime
 from models import Artist
@@ -212,11 +214,24 @@ def main():
                 while True:
                     try:
                         album = settings.spotify.album(album['uri'])
+                        tm.sleep(0.1)   # gentle pacing — avoids exhausting Spotify's rate limit
                     except Exception as ex:
-                        template = "Exception of type {0} occurred. Ignoring, pausing, then retrying:\n{1!r}"
-                        message = template.format(type(ex).__name__, ex.args)
-                        print(message)
-                        tm.sleep(5)
+                        ex_str = str(ex)
+                        retry_match = re.search(r'Retry will occur after:\s*(\d+)', ex_str)
+                        if retry_match:
+                            wait_secs = int(retry_match.group(1))
+                            if wait_secs > 300:
+                                print(f"\n⛔ Spotify rate limit exhausted — retry allowed in "
+                                      f"{wait_secs // 3600}h {(wait_secs % 3600) // 60}m ({wait_secs}s).")
+                                print("   The BPM cache preserves all work done so far.")
+                                print("   Run the program again after the wait period.")
+                                settings.sql_cursor.close()
+                                sys.exit(1)
+                            print(f"… Spotify rate limited, waiting {wait_secs}s before retry...")
+                            tm.sleep(wait_secs + 1)
+                        else:
+                            print(f"⚠ {type(ex).__name__}: {ex} — pausing 5s then retrying")
+                            tm.sleep(5)
                         continue
                     break
 
