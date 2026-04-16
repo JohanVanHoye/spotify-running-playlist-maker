@@ -26,10 +26,16 @@ _SPOTIFY_DELAY = 0.05   # seconds between Spotify name-search calls
 
 
 def _lastfm_get(params: dict, timeout: float = 8.0) -> Optional[dict]:
-    """GET a Last.fm API endpoint; return parsed JSON or None on error."""
+    """GET a Last.fm API endpoint; return parsed JSON or None on error.
+    Retries once on HTTP 429 after honouring the Retry-After header."""
     try:
         params["format"] = "json"
         r = requests.get(LASTFM_API_BASE, params=params, timeout=timeout)
+        if r.status_code == 429:
+            wait = int(r.headers.get("Retry-After", 10))
+            print(f"  … Last.fm rate limited, waiting {wait}s...")
+            time.sleep(wait + 1)
+            r = requests.get(LASTFM_API_BASE, params=params, timeout=timeout)
         if r.status_code == 200:
             return r.json()
         return None

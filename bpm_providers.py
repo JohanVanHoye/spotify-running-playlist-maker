@@ -20,6 +20,7 @@ Provider implemented:
 from __future__ import annotations
 import os
 import tempfile
+import time
 import urllib.parse
 from dataclasses import dataclass
 from typing import Optional, List, Iterable
@@ -53,6 +54,11 @@ def _get_deezer_preview(artist_name: str, track_name: str) -> Optional[str]:
         query = urllib.parse.quote(f"{artist_name} {track_name}")
         url = f"https://api.deezer.com/search?q={query}&limit=5"
         response = requests.get(url, timeout=8)
+        if response.status_code == 429:
+            wait = int(response.headers.get("Retry-After", 10))
+            print(f"  … Deezer rate limited, waiting {wait}s...")
+            time.sleep(wait + 1)
+            response = requests.get(url, timeout=8)
         if response.status_code == 200:
             for item in response.json().get("data", []):
                 preview = item.get("preview")
